@@ -1,383 +1,323 @@
-/*
- * daemon/ebpf/uprobes/test/cuda_actions_test.c
+/* cuda_actions_test.c
  *
- * Integration test for cuda_actions.bpf.c — the Driver API probes.
+ * Tests cuda_actions.bpf.o against every k* binary in the build directory.
  *
- * WHAT THIS FILE DOES:
- *   1. Loads cuda_actions.bpf.o into the kernel (Level 1+2).
- *   2. Attaches uprobes/uretprobes to the Driver API functions that
- *      cuda_actions.bpf.c instruments:
- *        - cuMemAlloc / cuMemAlloc_v2   (entry + return)
- *        - cuMemcpyHtoDAsync            (entry)
- *        - cuStreamSynchronize          (entry + return)
- *   3. Forks and execs k2 (the CUDA Driver API fixture) as a child.
- *      k2 calls cuMemAlloc/cuMemcpyHtoDAsync/cuStreamSynchronize in a loop.
- *   4. Polls the ring buffer while the child runs.
- *   5. Filters events to the child's PID.
- *   6. After the child exits, asserts (Level 4):
- *        - at least WEDJAT_ITERS cuMemAlloc events arrived
- *        - every alloc event has bytes > 0
- *        - at least WEDJAT_ITERS cuStreamSynchronize events arrived
- *        - every sync event has a non-zero latency_ns
+ * Structure:
+ *   1. environment check  (root + GPU)
+ *   2. load once          (verifier runs once for all programs)
+ *   3. attach once        (missing symbol = skip with reason, not a failure)
+ *   4. loop every kernel  (run it, read agg_map for its pid, print one row)
+ *   5. coverage           (warn about api_ids no kernel triggered)
  *
- * HOW TO BUILD (once cuda_actions.skel.h exists):
- *   See test/Makefile.
+ * usage:  sudo ./cuda_actions_test [build-dir]    (default: build)
+ * env:    LIBCUDA=/path/to/libcuda.so.1
+ *         DUMP=1   print full agg_map after each kernel
+ * exit:   0 PASS  1 FAIL  77 SKIP
  *
- * HOW TO RUN:
- *   sudo ./bin/cuda_actions_test k2
- *
- *   Requires root (CAP_BPF + CAP_PERFMON) and a real GPU.
- *   k2 must already be built: make -C ../../../../kernels_to_trace build
- *
- * CURRENT STATE:
- *   cuda_actions.bpf.c is design comments only — no real probes yet.
- *   The skeleton does not exist.  The BPF loader/attach/ringbuf blocks
- *   are in TODO comments below.  The fork/exec/waitpid skeleton compiles
- *   today without libbpf.
- *
- * RELATIONSHIP TO host_ctx_test.c:
- *   Identical shape.  The only differences are:
- *     - skeleton name:  cuda_actions_bpf  instead of host_ctx_bpf
- *     - attached symbols: cuMemAlloc, cuMemcpyHtoDAsync, cuStreamSynchronize
- *     - event struct:   action_event     instead of launch_event
- *     - default fixture: k2              instead of k1
- *     - assertions:     bytes/latency    instead of grid/block
+ * Naming convention in cuda_actions.bpf.c:
+ *   trace_X        uprobe entry  for symbol X
+ *   trace_X_ret    uretprobe exit for symbol X
  */
 
-#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
+#include <stdbool.h>
+#include <dirent.h>
 #include <unistd.h>
+#include <errno.h>
+#include <sys/wait.h>
+#include <linux/types.h>
+#include <bpf/libbpf.h>
+#include <bpf/bpf.h>
 
-/*
- * When cuda_actions.skel.h exists, uncomment:
- *
- * #include <bpf/libbpf.h>
- * #include "cuda_actions.skel.h"
- * #include "../../wedjat_common.h"
- */
+typedef __u32 u32;
+typedef __u64 u64;
 
-/* ============================================================
- * ASSERTION MACROS — identical to host_ctx_test.c
- * ============================================================ */
+#include "common.h"
+#include "cuda_actions.skel.h"
 
-#define ASSERT_TRUE(cond, msg)                                          \
-    do {                                                                \
-        if (!(cond)) {                                                  \
-            fprintf(stderr, "FAIL [%s:%d]: %s\n",                      \
-                    __FILE__, __LINE__, (msg));                         \
-            return 1;                                                   \
-        }                                                               \
-    } while (0)
+#define PASS 0
+#define FAIL 1
+#define SKIP 77
 
-#define ASSERT_EQ(actual, expected, msg)                                \
-    do {                                                                \
-        if ((actual) != (expected)) {                                   \
-            fprintf(stderr, "FAIL [%s:%d]: %s (got %ld, want %ld)\n",  \
-                    __FILE__, __LINE__, (msg),                          \
-                    (long)(actual), (long)(expected));                  \
-            return 1;                                                   \
-        }                                                               \
-    } while (0)
+/* ── api_ids this file tracks ─────────────────────────────────────────────
+ * Change this list only when you add or remove a probe in cuda_actions.bpf.c
+ * The coverage check warns if no kernel triggered an entry here.           */
+static const u32  TRACKED_IDS[]   = { API_LAUNCH, API_ALLOC, API_FREE,
+                                       API_MEMCPY_HTOD, API_MEMCPY_DTOH,
+                                       API_MEMCPY_DTOD, API_STREAM_SYNC,
+                                       API_CTX_SYNC };
+static const char *TRACKED_NAMES[] = { "LAUNCH", "ALLOC", "FREE",
+                                        "MEMCPY_HTOD", "MEMCPY_DTOH",
+                                        "MEMCPY_DTOD", "STREAM_SYNC",
+                                        "CTX_SYNC" };
+#define N_TRACKED (int)(sizeof(TRACKED_IDS) / sizeof(TRACKED_IDS[0]))
 
-#define ASSERT_GE(actual, expected, msg)                                \
-    do {                                                                \
-        if ((actual) < (expected)) {                                    \
-            fprintf(stderr, "FAIL [%s:%d]: %s (got %ld, want >= %ld)\n",\
-                    __FILE__, __LINE__, (msg),                          \
-                    (long)(actual), (long)(expected));                  \
-            return 1;                                                   \
-        }                                                               \
-    } while (0)
+/* ── helpers ──────────────────────────────────────────────────────────────*/
 
-/* ============================================================
- * EVENT STRUCT (stub until wedjat_common.h is filled in)
- *
- * Covers both alloc events and sync events.
- * The api_id field distinguishes which probe emitted the event.
- * Must match the layout in cuda_actions.bpf.c exactly.
- * ============================================================ */
-struct action_event {
-    unsigned long long timestamp_ns; /* when the entry probe fired           */
-    unsigned long long latency_ns;   /* for return probes: time inside call  */
-    unsigned long long bytes;        /* cuMemAlloc: requested size           */
-    unsigned long long devptr;       /* cuMemAlloc return: device pointer    */
-    unsigned int       pid;
-    unsigned int       tid;
-    unsigned int       api_id;       /* which CUDA function — see below      */
-    unsigned int       result;       /* CUDA result code from return probe   */
-    char               comm[16];
-};
-
-/*
- * api_id values — must match the constants in wedjat_common.h once defined.
- * Inline here as temporary stubs.
- */
-#define API_CUDA_MEM_ALLOC       1
-#define API_CUDA_MEMCPY_HTOD     2
-#define API_CUDA_STREAM_SYNC     3
-
-/* ============================================================
- * TEST STATE
- * ============================================================ */
-static int   g_alloc_events  = 0;
-static int   g_sync_events   = 0;
-static int   g_assert_failed = 0;
-static pid_t g_fixture_pid   = -1;
-
-/* ============================================================
- * RING BUFFER CALLBACK
- *
- * TODO: uncomment when skeleton exists.
- *
- * static int handle_event(void *ctx, void *data, size_t sz)
- * {
- *     (void)ctx;
- *     if (sz < sizeof(struct action_event))
- *         return 0;
- *
- *     struct action_event *e = (struct action_event *)data;
- *
- *     // Ignore events from other processes on the machine.
- *     if (e->pid != (unsigned int)g_fixture_pid)
- *         return 0;
- *
- *     switch (e->api_id) {
- *     case API_CUDA_MEM_ALLOC:
- *         g_alloc_events++;
- *         if (e->bytes == 0) {
- *             fprintf(stderr, "FAIL: alloc event %d has bytes == 0\n",
- *                     g_alloc_events);
- *             g_assert_failed = 1;
- *         }
- *         break;
- *
- *     case API_CUDA_STREAM_SYNC:
- *         g_sync_events++;
- *         //
- *         // latency_ns is only known at the return probe.
- *         // The entry event arrives first with latency_ns == 0;
- *         // the return event arrives after with latency_ns set.
- *         // We only count events where latency is non-zero
- *         // (i.e. return events) to avoid double-counting.
- *         //
- *         if (e->latency_ns == 0)
- *             g_sync_events--; // entry event, not yet complete
- *         break;
- *
- *     default:
- *         break;
- *     }
- *
- *     return 0;
- * }
- * ============================================================ */
-
-/* ============================================================
- * FIXTURE RUNNER — identical to host_ctx_test.c
- * ============================================================ */
-static pid_t run_fixture(const char *binary_path, int iters, int sleep_ms)
+static bool env_on(const char *name)
 {
-    pid_t pid = fork();
-    if (pid < 0) {
-        perror("fork");
-        return -1;
+    const char *v = getenv(name);
+    return v && *v;
+}
+
+/* Sum agg_map for one pid and one api_id (0 = all). */
+static struct agg_val sum_api(int fd, u32 pid, u32 api)
+{
+    int ncpu = libbpf_num_possible_cpus();
+    struct agg_val *v = calloc(ncpu, sizeof(*v));
+    struct agg_val  t = {0};
+    struct agg_key  cur, next;
+    struct agg_key *prev = NULL;
+
+    while (bpf_map_get_next_key(fd, prev, &next) == 0) {
+        if (next.pid == pid &&
+            (api == 0 || next.api_id == api) &&
+            bpf_map_lookup_elem(fd, &next, v) == 0) {
+            for (int i = 0; i < ncpu; i++) {
+                t.calls      += v[i].calls;
+                t.bytes      += v[i].bytes;
+                t.latency_ns += v[i].latency_ns;
+                t.errors     += v[i].errors;
+                if (v[i].max_latency_ns > t.max_latency_ns)
+                    t.max_latency_ns = v[i].max_latency_ns;
+            }
+        }
+        cur  = next;
+        prev = &cur;
     }
+    free(v);
+    return t;
+}
 
+/* Print full agg_map for one pid (DUMP=1). */
+static void dump_agg(int fd, u32 pid)
+{
+    int ncpu = libbpf_num_possible_cpus();
+    struct agg_val *v = calloc(ncpu, sizeof(*v));
+    struct agg_key  cur, next;
+    struct agg_key *prev = NULL;
+
+    printf("    [dump pid %u]\n", pid);
+    while (bpf_map_get_next_key(fd, prev, &next) == 0) {
+        if (next.pid == pid && bpf_map_lookup_elem(fd, &next, v) == 0) {
+            u64 calls = 0, bytes = 0, lat = 0;
+            for (int i = 0; i < ncpu; i++) {
+                calls += v[i].calls;
+                bytes += v[i].bytes;
+                lat   += v[i].latency_ns;
+            }
+            printf("    api_id=%-2u dev=%u calls=%llu bytes=%llu lat_ns=%llu\n",
+                   next.api_id, next.device_id,
+                   (unsigned long long)calls,
+                   (unsigned long long)bytes,
+                   (unsigned long long)lat);
+        }
+        cur  = next;
+        prev = &cur;
+    }
+    free(v);
+}
+
+/* Fork a child that waits on a pipe before execl(). */
+static pid_t spawn_paused(const char *path, int *go_fd)
+{
+    int p[2];
+    if (pipe(p)) return -1;
+
+    pid_t pid = fork();
     if (pid == 0) {
-        char iters_str[16], sleep_str[16];
-        snprintf(iters_str, sizeof(iters_str), "%d", iters);
-        snprintf(sleep_str, sizeof(sleep_str), "%d", sleep_ms);
-        setenv("WEDJAT_ITERS",    iters_str, 1);
-        setenv("WEDJAT_SLEEP_MS", sleep_str, 1);
-
-        execl(binary_path, binary_path, (char *)NULL);
-        perror("execl");
+        char c;
+        close(p[1]);
+        if (read(p[0], &c, 1) != 1) _exit(126);
+        execl(path, path, (char *)NULL);
         _exit(127);
     }
-
+    close(p[0]);
+    *go_fd = p[1];
     return pid;
 }
 
-/* ============================================================
- * TEST FUNCTION
- * ============================================================ */
-static int test_cuda_actions_driver_api(const char *fixture_path)
+/* Release child and wait for it to finish. */
+static int release_and_wait(pid_t pid, int go_fd)
 {
-    /*
-     * k2 calls cuMemAlloc once and cuStreamSynchronize once per iteration.
-     * With WEDJAT_ITERS=3 we expect exactly 3 alloc events and 3 sync events.
-     */
-    const int expected_iters = 3;
-
-    printf("TEST cuda_actions_driver_api fixture=%s iters=%d\n",
-           fixture_path, expected_iters);
-
-    /* -------------------------------------------------------
-     * Level 1+2: load BPF object.
-     *
-     * TODO: uncomment when skeleton exists.
-     *
-     * struct cuda_actions_bpf *skel = cuda_actions_bpf__open_and_load();
-     * ASSERT_TRUE(skel != NULL, "failed to load cuda_actions BPF skeleton");
-     * ------------------------------------------------------- */
-
-    /* -------------------------------------------------------
-     * Level 3: attach uprobes/uretprobes.
-     *
-     * cuda_actions.bpf.c instruments multiple functions.
-     * Each needs its own bpf_link.
-     *
-     * TODO: uncomment when skeleton exists.  Replace libcuda path
-     * as needed for the target machine (ldconfig -p | grep libcuda).
-     *
-     * const char *libcuda = "/usr/lib/x86_64-linux-gnu/libcuda.so.1";
-     *
-     * // cuMemAlloc entry
-     * struct bpf_uprobe_opts alloc_entry_opts = {
-     *     .sz = sizeof(alloc_entry_opts),
-     *     .func_name = "cuMemAlloc_v2",
-     *     .retprobe  = false,
-     * };
-     * struct bpf_link *alloc_entry_link = bpf_program__attach_uprobe_opts(
-     *     skel->progs.handle_cu_mem_alloc_entry, -1, libcuda,
-     *     0, &alloc_entry_opts);
-     * ASSERT_TRUE(alloc_entry_link != NULL,
-     *     "failed to attach uprobe to cuMemAlloc_v2 entry");
-     *
-     * // cuMemAlloc return
-     * struct bpf_uprobe_opts alloc_ret_opts = {
-     *     .sz = sizeof(alloc_ret_opts),
-     *     .func_name = "cuMemAlloc_v2",
-     *     .retprobe  = true,
-     * };
-     * struct bpf_link *alloc_ret_link = bpf_program__attach_uprobe_opts(
-     *     skel->progs.handle_cu_mem_alloc_return, -1, libcuda,
-     *     0, &alloc_ret_opts);
-     * ASSERT_TRUE(alloc_ret_link != NULL,
-     *     "failed to attach uretprobe to cuMemAlloc_v2");
-     *
-     * // cuStreamSynchronize entry
-     * struct bpf_uprobe_opts sync_entry_opts = {
-     *     .sz = sizeof(sync_entry_opts),
-     *     .func_name = "cuStreamSynchronize",
-     *     .retprobe  = false,
-     * };
-     * struct bpf_link *sync_entry_link = bpf_program__attach_uprobe_opts(
-     *     skel->progs.handle_cu_stream_sync_entry, -1, libcuda,
-     *     0, &sync_entry_opts);
-     * ASSERT_TRUE(sync_entry_link != NULL,
-     *     "failed to attach uprobe to cuStreamSynchronize entry");
-     *
-     * // cuStreamSynchronize return
-     * struct bpf_uprobe_opts sync_ret_opts = {
-     *     .sz = sizeof(sync_ret_opts),
-     *     .func_name = "cuStreamSynchronize",
-     *     .retprobe  = true,
-     * };
-     * struct bpf_link *sync_ret_link = bpf_program__attach_uprobe_opts(
-     *     skel->progs.handle_cu_stream_sync_return, -1, libcuda,
-     *     0, &sync_ret_opts);
-     * ASSERT_TRUE(sync_ret_link != NULL,
-     *     "failed to attach uretprobe to cuStreamSynchronize");
-     * ------------------------------------------------------- */
-
-    /* -------------------------------------------------------
-     * Open ring buffer reader.
-     *
-     * TODO: uncomment when skeleton exists.
-     *
-     * struct ring_buffer *rb = ring_buffer__new(
-     *     bpf_map__fd(skel->maps.events), handle_event, NULL, NULL);
-     * ASSERT_TRUE(rb != NULL, "failed to open ring buffer");
-     * ------------------------------------------------------- */
-
-    /* Spawn k2 as a child process. */
-    g_fixture_pid = run_fixture(fixture_path, expected_iters, 20);
-    ASSERT_TRUE(g_fixture_pid > 0, "failed to fork CUDA fixture");
-
-    /* -------------------------------------------------------
-     * Poll ring buffer while child runs.
-     *
-     * TODO: replace with real poll once skeleton exists.
-     *
-     * int wstatus;
-     * while (waitpid(g_fixture_pid, &wstatus, WNOHANG) == 0)
-     *     ring_buffer__poll(rb, 100);
-     * ring_buffer__poll(rb, 200);  // final drain
-     * ------------------------------------------------------- */
-
-    int wstatus;
-    if (waitpid(g_fixture_pid, &wstatus, 0) < 0) {
-        perror("waitpid");
-        return 1;
-    }
-
-    /* Assert the CUDA fixture itself exited cleanly. */
-    ASSERT_TRUE(WIFEXITED(wstatus),       "fixture did not exit normally");
-    ASSERT_EQ(WEXITSTATUS(wstatus), 0,    "fixture exited with non-zero status");
-
-    /* -------------------------------------------------------
-     * Level 4: assert on captured events.
-     *
-     * TODO: uncomment when skeleton exists.
-     *
-     * ASSERT_TRUE(!g_assert_failed,
-     *     "per-event assertions failed");
-     * ASSERT_EQ(g_alloc_events, expected_iters,
-     *     "wrong number of cuMemAlloc events");
-     * ASSERT_EQ(g_sync_events, expected_iters,
-     *     "wrong number of cuStreamSynchronize events");
-     * ------------------------------------------------------- */
-
-    fprintf(stderr, "SKIP: BPF skeleton not generated yet — probe assertions not active\n");
-
-    /* -------------------------------------------------------
-     * Cleanup.
-     *
-     * TODO: uncomment when skeleton exists.
-     *
-     * ring_buffer__free(rb);
-     * bpf_link__destroy(sync_ret_link);
-     * bpf_link__destroy(sync_entry_link);
-     * bpf_link__destroy(alloc_ret_link);
-     * bpf_link__destroy(alloc_entry_link);
-     * cuda_actions_bpf__destroy(skel);
-     * ------------------------------------------------------- */
-
-    printf("SKIP cuda_actions_driver_api (skeleton missing)\n");
-    return 0;
+    int st = 0;
+    if (write(go_fd, "x", 1) != 1) perror("write");
+    close(go_fd);
+    waitpid(pid, &st, 0);
+    return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 }
 
-/* ============================================================
- * ENTRY POINT
- *
- * Usage: sudo ./bin/cuda_actions_test <fixture>
- *   Default fixture is k2 (CUDA Driver API calls).
- *   k1 can also be passed but only triggers cuLaunchKernel,
- *   not the memory/sync probes this test focuses on.
- * ============================================================ */
-int main(int argc, char *argv[])
+/* Scan dir for executable files starting with 'k' and no dot in the name. */
+static int scan_kernels(const char *dir, char **paths, int max)
 {
-    if (argc < 2) {
-        fprintf(stderr, "usage: %s <fixture>\n", argv[0]);
-        fprintf(stderr, "  <fixture> is k1, k2, etc. from kernels_to_trace/build/\n");
-        fprintf(stderr, "  example:  sudo %s k2\n", argv[0]);
-        return 2;
+    DIR *d = opendir(dir);
+    if (!d) { printf("FAIL: cannot open %s: %s\n", dir, strerror(errno)); return 0; }
+
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL && n < max) {
+        if (e->d_name[0] != 'k' || strchr(e->d_name, '.')) continue;
+        char path[512];
+        snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
+        if (access(path, X_OK) == 0)
+            paths[n++] = strdup(path);
+    }
+    closedir(d);
+    /* sort alphabetically */
+    for (int i = 0; i < n - 1; i++)
+        for (int j = i + 1; j < n; j++)
+            if (strcmp(paths[i], paths[j]) > 0) {
+                char *tmp = paths[i]; paths[i] = paths[j]; paths[j] = tmp;
+            }
+    return n;
+}
+
+/* ── main ─────────────────────────────────────────────────────────────────*/
+
+int main(int argc, char **argv)
+{
+    const char *dir = argc > 1 ? argv[1] : "build";
+    const char *lib = env_on("LIBCUDA") ? getenv("LIBCUDA") : "libcuda.so.1";
+
+    /* 1. environment */
+    if (geteuid() != 0)        { printf("SKIP: run as root\n");              return SKIP; }
+    if (access("/dev/nvidiactl", F_OK) != 0)
+                               { printf("SKIP: no NVIDIA GPU\n");            return SKIP; }
+
+    /* 2. load */
+    printf("== cuda_actions ==\n");
+    struct cuda_actions_bpf *skel = cuda_actions_bpf__open_and_load();
+    if (!skel) {
+        printf("FAIL: load failed (see verifier output above)\n");
+        return FAIL;
+    }
+    printf("load    ok\n");
+
+    /* 3. attach — one line per symbol, missing = skip */
+    printf("attach\n");
+
+#define H(sym)  { skel->progs.trace_##sym,      #sym, false, &skel->links.trace_##sym }
+#define HR(sym) { skel->progs.trace_##sym##_ret, #sym, true,  &skel->links.trace_##sym##_ret }
+
+    struct {
+        struct bpf_program *prog;
+        const char         *sym;
+        bool                ret;
+        struct bpf_link   **slot;
+    } hooks[] = {
+        H(cuLaunchKernel),           H(cuLaunchKernel_ptsz),
+        H(cuLaunchCooperativeKernel),H(cuGraphLaunch),
+        H(cuMemAlloc_v2),            HR(cuMemAlloc_v2),
+        H(cuMemFree_v2),             H(cuMemAllocManaged),
+        H(cuMemcpyHtoD_v2),          H(cuMemcpyDtoH_v2),  H(cuMemcpyDtoD_v2),
+        H(cuMemcpyHtoDAsync_v2),     H(cuMemcpyDtoHAsync_v2), H(cuMemcpyDtoDAsync_v2),
+        H(cuMemcpyAsync),
+        H(cuCtxSynchronize),         HR(cuCtxSynchronize),
+        H(cuStreamSynchronize),      HR(cuStreamSynchronize),
+        H(cuStreamSynchronize_ptsz), HR(cuStreamSynchronize_ptsz),
+        H(cuModuleGetFunction),
+    };
+#undef H
+#undef HR
+
+    int n_hooks   = (int)(sizeof(hooks) / sizeof(hooks[0]));
+    int attached  = 0;
+    for (int i = 0; i < n_hooks; i++) {
+        LIBBPF_OPTS(bpf_uprobe_opts, o,
+                    .func_name = hooks[i].sym,
+                    .retprobe  = hooks[i].ret);
+        struct bpf_link *l =
+            bpf_program__attach_uprobe_opts(hooks[i].prog, -1, lib, 0, &o);
+        if (!l) {
+            printf("  skip  %s%s (%s)\n",
+                   hooks[i].sym, hooks[i].ret ? "[ret]" : "", strerror(errno));
+            continue;
+        }
+        *hooks[i].slot = l;
+        attached++;
+    }
+    printf("  %d/%d attached\n", attached, n_hooks);
+
+    if (attached == 0) {
+        printf("SKIP: no hooks attached — try LIBCUDA=/full/path\n");
+        cuda_actions_bpf__destroy(skel);
+        return SKIP;
     }
 
-    char fixture_path[512];
-    snprintf(fixture_path, sizeof(fixture_path),
-             "../../../../kernels_to_trace/build/%s", argv[1]);
-
-    if (access(fixture_path, X_OK) != 0) {
-        fprintf(stderr, "FAIL: fixture not found or not executable: %s\n",
-                fixture_path);
-        fprintf(stderr, "  run: make -C kernels_to_trace build\n");
-        return 2;
+    /* 4. loop kernels */
+    char *kpaths[64];
+    int   nk = scan_kernels(dir, kpaths, 64);
+    if (nk == 0) {
+        printf("SKIP: no k* binaries in %s\n", dir);
+        cuda_actions_bpf__destroy(skel);
+        return SKIP;
     }
 
-    return test_cuda_actions_driver_api(fixture_path);
+    /* header row */
+    printf("\nkernel    ");
+    for (int i = 0; i < N_TRACKED; i++)
+        printf("  %10s", TRACKED_NAMES[i]);
+    printf("  result\n");
+
+    bool covered[N_TRACKED];
+    memset(covered, 0, sizeof(covered));
+    int fail = 0;
+
+    int agg_fd = bpf_map__fd(skel->maps.agg_map);
+
+    for (int k = 0; k < nk; k++) {
+        const char *kname = strrchr(kpaths[k], '/') + 1;
+
+        int go;
+        pid_t pid = spawn_paused(kpaths[k], &go);
+        if (pid < 0) {
+            printf("  %-10s  FAIL(fork)\n", kname);
+            fail = 1;
+            continue;
+        }
+
+        int rc = release_and_wait(pid, go);
+
+        if (env_on("DUMP"))
+            dump_agg(agg_fd, (u32)pid);
+
+        /* print row */
+        printf("  %-10s", kname);
+        struct agg_val total = sum_api(agg_fd, (u32)pid, 0);
+
+        for (int i = 0; i < N_TRACKED; i++) {
+            struct agg_val v = sum_api(agg_fd, (u32)pid, TRACKED_IDS[i]);
+            if (v.calls > 0) covered[i] = true;
+            if (v.calls == 0) printf("  %10s", ".");
+            else              printf("  %10llu", (unsigned long long)v.calls);
+        }
+
+        if (rc != 0) {
+            printf("  FAIL(exit %d)\n", rc);
+            fail = 1;
+        } else if (total.calls == 0) {
+            printf("  FAIL(no probes fired)\n");
+            fail = 1;
+        } else {
+            printf("  ok\n");
+        }
+
+        free(kpaths[k]);
+    }
+
+    /* 5. coverage */
+    printf("\ncoverage\n");
+    for (int i = 0; i < N_TRACKED; i++) {
+        if (!covered[i])
+            printf("  WARN  %s not triggered by any kernel\n", TRACKED_NAMES[i]);
+        else
+            printf("  ok    %s\n", TRACKED_NAMES[i]);
+    }
+
+    cuda_actions_bpf__destroy(skel);
+
+    printf("\ncuda_actions_test: %s\n", fail ? "FAIL" : "PASS");
+    return fail ? FAIL : PASS;
 }
