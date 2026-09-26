@@ -10,19 +10,26 @@ KERNELS_BUILD := $(KERNELS_DIR)/build
 BPF_SRC_DIR   := ..
 
 # ---------------------------------------------------------------------------
-# Tools — identical to uprobes/test/Makefile
+# Tools
 # ---------------------------------------------------------------------------
 
 CC      := clang
 BPF_CC  := clang
 BPFTOOL := bpftool
+ARCH    := $(shell uname -m | sed 's/x86_64/x86/;s/aarch64/arm64/')
+
+# ---------------------------------------------------------------------------
+# Build output
+# ---------------------------------------------------------------------------
+
+BUILD := build
 
 # ---------------------------------------------------------------------------
 # Flags
 # ---------------------------------------------------------------------------
 
-BPF_CFLAGS := -g -O2 -target bpf -D__TARGET_ARCH_x86 \
-              -I/usr/include/x86_64-linux-gnu
+BPF_CFLAGS := -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) -D__bpf__ \
+              -I$(BUILD) -I../..
 
 HAVE_PKG_CONFIG := $(shell command -v pkg-config 2>/dev/null)
 ifdef HAVE_PKG_CONFIG
@@ -33,83 +40,39 @@ else
     LIBS   := -lbpf -lelf -lz
 endif
 
-# ---------------------------------------------------------------------------
-# Build output
-# ---------------------------------------------------------------------------
+.PHONY: all run clean
 
-BIN := bin
-
-# ---------------------------------------------------------------------------
-# BPF program and CUDA inputs
-#
-# There is only one BPF program here: driver_kprobes.
-# It is tested against k1 and k2 (both go through nvidia_unlocked_ioctl).
-# ---------------------------------------------------------------------------
-
-BPF_PROGRAM  := driver_kprobes
-CUDA_PROGRAMS := k1 k2
-
-PROGRAM ?= k2   # default fixture: Driver API (cuMemAlloc/cuStreamSynchronize)
-
-.PHONY: help test test-all test-one list build build-bpf build-tests \
-        build-inputs clean
-
-# ---------------------------------------------------------------------------
-# Help
-# ---------------------------------------------------------------------------
-
-help:
-	@echo "Wedjat kprobe tests (C/libbpf)"
-	@echo ""
-	@echo "Prerequisites:"
-	@echo "  clang, bpftool, libbpf-dev, linux-headers"
-	@echo "  nvidia.ko and nvidia-uvm.ko loaded (for NVIDIA symbol probes)"
-	@echo "  Root (CAP_BPF + CAP_PERFMON) to run tests."
-	@echo ""
-	@echo "Build targets:"
-	@echo "  make build         Compile BPF object, generate skeleton, build test binary"
-	@echo "  make build-bpf     BPF object + skeleton only"
-	@echo "  make build-tests   C test binary only (needs skeleton)"
-	@echo "  make build-inputs  Build CUDA fixture binaries in kernels_to_trace/"
-	@echo ""
-	@echo "Test targets (require root + GPU + nvidia.ko):"
-	@echo "  make test              Run kprobe tests against all CUDA inputs"
-	@echo "  make test-one PROGRAM=k2   Run against one CUDA input"
-	@echo ""
-	@echo "  make list          Show available CUDA inputs"
-	@echo ""
-	@echo "BPF program:   $(BPF_PROGRAM)"
-	@echo "CUDA inputs:   $(CUDA_PROGRAMS)"
-
-list:
-	@echo "BPF_PROGRAM=$(BPF_PROGRAM)"
-	@echo "CUDA_PROGRAMS=$(CUDA_PROGRAMS)"
+all: build-bpf build-tests build-inputs
 
 # ---------------------------------------------------------------------------
 # BPF compilation + skeleton generation
 # ---------------------------------------------------------------------------
 
-$(BIN):
-	@mkdir -p $(BIN)
+$(BUILD)/.d:
+	@mkdir -p $(BUILD)
+	@touch $@
 
-$(BIN)/$(BPF_PROGRAM).bpf.o: $(BPF_SRC_DIR)/$(BPF_PROGRAM).bpf.c | $(BIN)
+$(BUILD)/vmlinux.h: | $(BUILD)/.d
+	bpftool btf dump file /sys/kernel/btf/vmlinux format c > $@
+
+$(BUILD)/driver_kprobes.bpf.o: $(BPF_SRC_DIR)/driver_kprobes.bpf.c \
+    $(BPF_SRC_DIR)/../common.h $(BUILD)/vmlinux.h | $(BUILD)/.d
 	$(BPF_CC) $(BPF_CFLAGS) -c $< -o $@
 
-$(BIN)/$(BPF_PROGRAM).skel.h: $(BIN)/$(BPF_PROGRAM).bpf.o
+$(BUILD)/driver_kprobes.skel.h: $(BUILD)/driver_kprobes.bpf.o
 	$(BPFTOOL) gen skeleton $< > $@
 
-build-bpf: $(BIN)/$(BPF_PROGRAM).bpf.o $(BIN)/$(BPF_PROGRAM).skel.h
+build-bpf: $(BUILD)/driver_kprobes.skel.h
 
 # ---------------------------------------------------------------------------
 # Test harness compilation
 # ---------------------------------------------------------------------------
 
-$(BIN)/$(BPF_PROGRAM)_test: $(BPF_PROGRAM)_test.c $(BIN)/$(BPF_PROGRAM).skel.h | $(BIN)
-	$(CC) $(CFLAGS) -I$(BIN) -o $@ $< $(LIBS)
+$(BUILD)/driver_kprobes_test: driver_kprobes_test.c \
+    $(BPF_SRC_DIR)/../common.h $(BUILD)/driver_kprobes.skel.h | $(BUILD)/.d
+	$(CC) $(CFLAGS) -I$(BUILD) -I../.. -o $@ $< $(LIBS)
 
-build-tests: $(BIN)/$(BPF_PROGRAM)_test
-
-build: build-bpf build-tests
+build-tests: $(BUILD)/driver_kprobes_test
 
 # ---------------------------------------------------------------------------
 # CUDA fixture inputs
@@ -122,28 +85,27 @@ build-inputs:
 # Test execution
 # ---------------------------------------------------------------------------
 
-test: test-all
+# Usage:
+#   make run                        # run driver_kprobes_test
+#   make run TARGET=driver_kprobes  # same thing (explicit)
 
-test-all: build build-inputs
-	@set -e; \
-	for program in $(CUDA_PROGRAMS); do \
-		$(MAKE) test-one PROGRAM=$$program; \
-	done
+TARGET ?= driver_kprobes
 
-test-one: build build-inputs
-	@test -n "$(PROGRAM)" || { echo "PROGRAM is required" >&2; exit 2; }
-	@test -x "$(KERNELS_BUILD)/$(PROGRAM)" || { \
-		echo "missing CUDA input: $(KERNELS_BUILD)/$(PROGRAM)" >&2; \
-		echo "  run: make -C kernels_to_trace build" >&2; \
-		exit 2; \
-	}
-	@echo "RUN  PROGRAM=$(PROGRAM)"
-	sudo $(BIN)/$(BPF_PROGRAM)_test $(PROGRAM)
-	@echo "PASS PROGRAM=$(PROGRAM)"
+check-modules:
+	@if ! grep -q ' t uvm_\| T uvm_' /proc/kallsyms 2>/dev/null; then \
+		echo "==> nvidia-uvm.ko not loaded, loading..."; \
+		sudo modprobe nvidia-uvm || { echo "ERROR: modprobe nvidia-uvm failed"; exit 1; }; \
+	else \
+		echo "==> nvidia-uvm.ko already loaded"; \
+	fi
+
+run: all check-modules
+	sudo env DUMP="$(DUMP)" $(BUILD)/$(TARGET)_test $(KERNELS_BUILD)
 
 # ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
 
 clean:
-	$(RM) -r $(BIN)
+	$(RM) -r $(BUILD)
+	$(MAKE) -C $(KERNELS_DIR) clean

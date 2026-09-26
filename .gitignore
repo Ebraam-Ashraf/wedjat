@@ -1,16 +1,25 @@
-notes
+# Build outputs
+build/
+**/build/
 
-# CUDA fixture build outputs
-kernels_to_trace/build/
+# Compiled BPF objects and skeletons
+*.bpf.o
+*.skel.h
+vmlinux.h
 
-# Test binary output directories
-daemon/ebpf/uprobes/test/bin/
-daemon/ebpf/kprobes/test/bin/
-daemon/ebpf/device/test/bin/
-daemon/nvml/test/bin/
+# Test binaries
+*_test
 
-# Generated BPF artifacts (compiled from bpftool gen skeleton)
-daemon/ebpf/uprobes/test/*.bpf.o
-daemon/ebpf/uprobes/test/*.skel.h
-daemon/ebpf/kprobes/test/*.bpf.o
-daemon/ebpf/kprobes/test/*.skel.h
+# Object files and binaries
+*.o
+*.out
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Editor / OS
+*.swp
+.DS_Store

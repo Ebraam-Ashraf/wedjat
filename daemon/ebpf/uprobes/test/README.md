@@ -2,41 +2,101 @@
 
 Tests for `cuda_actions.bpf.c` and `host_ctx.bpf.c`.
 
-## Build & run
+---
+
+## Build & Run
 
 ```sh
-# from wedjat/daemon/ebpf/uprobes/test/
-make                                             # build kernels + BPF objects + skeletons + test binaries → build/
-make run                                         # build everything then run both tests (needs sudo + GPU)
-make run DUMP=1                                  # same but also print raw agg_map after each kernel
-make run LIBCUDA=/usr/lib/x86_64-linux-gnu/libcuda.so.1   # override libcuda path if auto-detect fails
-make clean                                       # wipe build/
+cd daemon/ebpf/uprobes/test
 
-sudo build/cuda_actions_test build/              # run only cuda_actions_test
-sudo build/host_ctx_test     build/              # run only host_ctx_test
+make                          # build everything → build/
+make run                      # build + run both tests (needs sudo + GPU)
+make run TARGET=cuda_actions   # run only cuda_actions_test
+make run TARGET=host_ctx      # run only host_ctx_test
+make clean                    # wipe build/
 
-sudo DUMP=1   build/cuda_actions_test build/     # cuda_actions_test with agg_map dump
-sudo LIBCUDA=/path/to/libcuda.so.1 build/cuda_actions_test build/   # with explicit libcuda
-
-# find libcuda path if needed
-ldconfig -p | grep libcuda
+# useful variables
+make run DUMP=1               # also print every raw event after each kernel
+make run LIBCUDA=/path/to/libcuda.so.1   # override libcuda path if needed
 ```
 
-## What each test does
+---
 
-**`cuda_actions_test`** — loads `cuda_actions.bpf.o`, attaches all uprobes to
-`libcuda.so` once, then runs every `k*` binary found in `build/` and checks
-`agg_map` for that binary's pid. Prints one row per kernel showing call counts
-per api_id, then a coverage summary.
+## What Each Test Does
 
-**`host_ctx_test`** — loads `host_ctx.bpf.o`, attaches context uprobes once,
-runs every `k*` binary, and checks that `tid_to_device` has an entry for the
-binary's main thread after it exits.
+### `cuda_actions_test`
 
-## Needs
+Loads `cuda_actions.bpf.o` and `host_ctx.bpf.o` together — the context
+hooks (`host_ctx`) must run alongside the action hooks so that `tid_to_device`
+and `ctx_to_device` get populated. Without them every `cuda_actions` probe
+returns early (no device mapping) and no events reach the ring buffer.
+
+Both objects share the same `tid_to_device` and `ctx_to_device` maps via
+`bpf_map__reuse_fd()`.
+
+For every `k*` binary found in `build/`:
+
+1. Fork + exec the binary.
+2. Poll `events_pipe` ring buffer while it runs, filtering to that child's pid.
+3. Tally events by `api_id` from `enum event_id` in `common.h`.
+4. Print one row per binary showing call counts per event type.
+5. After all binaries, print a coverage summary — warn about any `EVENT_*`
+   id that no binary triggered.
+
+```text
+kernel      LAUNCH     ALLOC      FREE     MEMCPY      SYNC   result
+k1              20         1         1          2        20   ok
+k2               5         3         3          3         5   ok
+k3              24         4         4         16        32   ok
+```
+
+Tracked events: `EVENT_LAUNCH`, `EVENT_ALLOC`, `EVENT_FREE`, `EVENT_MEMCPY`,
+`EVENT_SYNC`.
+
+### `host_ctx_test`
+
+Loads `host_ctx.bpf.o` and attaches all context lifecycle uprobes once.
+For every `k*` binary:
+
+1. Fork + exec the binary.
+2. After it exits, look up the binary's pid in `tid_to_device`.
+3. The entry must exist — confirms that `cuCtxCreate`/`cuCtxSetCurrent`
+   fired and the TID→device mapping was written correctly.
+
+```text
+kernel      tid_found  device  result
+k1          yes        0       ok
+k2          yes        0       ok
+k3          yes        0       ok
+```
+
+---
+
+## Environment Variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `LIBCUDA` | `libcuda.so.1` | Path to `libcuda.so` — set if auto-detect fails |
+| `DUMP` | unset | Print every raw `struct event` while running |
+
+---
+
+## Requirements
 
 - Root (`sudo`)
 - NVIDIA driver + GPU (`/dev/nvidiactl`)
 - `nvcc`, `clang`, `bpftool`, `libbpf-dev`
 
-Missing GPU or root → exit 77 (SKIP), not FAIL.
+Missing root or GPU → exit `77` (SKIP), not `FAIL`.
+
+---
+
+## Adding a New Probe
+
+```text
+cuda_actions.bpf.c    add the uprobe / uretprobe
+cuda_actions_test.c   add the EVENT_* id to TRACKED_IDS[] and TRACKED_NAMES[]
+
+host_ctx.bpf.c        add the uprobe / uretprobe
+host_ctx_test.c       add the symbol to hooks[]
+```

@@ -6,12 +6,24 @@
  *   1. environment check  (root + GPU)
  *   2. load once          (verifier runs once for all programs)
  *   3. attach once        (missing symbol = skip with reason, not a failure)
- *   4. loop every kernel  (run it, read agg_map for its pid, print one row)
- *   5. coverage           (warn about api_ids no kernel triggered)
+ *   4. loop every kernel  (run it, drain events_pipe for its pid, print one row)
+ *   5. coverage           (warn about event ids no kernel triggered)
+ *
+ * common.h has no agg_map/agg_key/agg_val/API_* — the only channel
+ * cuda_actions.bpf.c has to userspace is the events_pipe ring buffer of
+ * struct event, tagged with the EVENT_* ids from common.h's event_id enum.
+ * So unlike a hash-map read, this test has to actually poll the ring buffer
+ * to see anything — there's no "read it back later" option.
+ *
+ * One real consequence: struct event's api_id is coarser than this test
+ * used to assume. EVENT_MEMCPY covers HtoD/DtoH/DtoD alike (no per-direction
+ * id), and EVENT_SYNC covers both cuStreamSynchronize and cuCtxSynchronize.
+ * If you want that split back, it has to be added to common.h's enum first —
+ * not done here since that's a schema change, not a test fix.
  *
  * usage:  sudo ./cuda_actions_test [build-dir]    (default: build)
  * env:    LIBCUDA=/path/to/libcuda.so.1
- *         DUMP=1   print full agg_map after each kernel
+ *         DUMP=1   print every matching event as it's polled
  * exit:   0 PASS  1 FAIL  77 SKIP
  *
  * Naming convention in cuda_actions.bpf.c:
@@ -31,9 +43,6 @@
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 
-typedef __u32 u32;
-typedef __u64 u64;
-
 #include "common.h"
 #include "cuda_actions.skel.h"
 
@@ -41,18 +50,48 @@ typedef __u64 u64;
 #define FAIL 1
 #define SKIP 77
 
-/* ── api_ids this file tracks ─────────────────────────────────────────────
- * Change this list only when you add or remove a probe in cuda_actions.bpf.c
- * The coverage check warns if no kernel triggered an entry here.           */
-static const u32  TRACKED_IDS[]   = { API_LAUNCH, API_ALLOC, API_FREE,
-                                       API_MEMCPY_HTOD, API_MEMCPY_DTOH,
-                                       API_MEMCPY_DTOD, API_STREAM_SYNC,
-                                       API_CTX_SYNC };
+/* ── event ids this file tracks ───────────────────────────────────────────
+ * Change this list only when common.h's event_id enum changes.
+ * The coverage check warns if no kernel triggered an id here. */
+static const u32  TRACKED_IDS[]   = { EVENT_LAUNCH, EVENT_ALLOC, EVENT_FREE,
+                                       EVENT_MEMCPY, EVENT_SYNC };
 static const char *TRACKED_NAMES[] = { "LAUNCH", "ALLOC", "FREE",
-                                        "MEMCPY_HTOD", "MEMCPY_DTOH",
-                                        "MEMCPY_DTOD", "STREAM_SYNC",
-                                        "CTX_SYNC" };
+                                        "MEMCPY", "SYNC" };
 #define N_TRACKED (int)(sizeof(TRACKED_IDS) / sizeof(TRACKED_IDS[0]))
+
+/* ── ring buffer state ────────────────────────────────────────────────────
+ * Reset per kernel; the callback only sees events from the pid we just ran. */
+static pid_t g_target_pid          = -1;
+static u64   g_run_counts[N_TRACKED];
+static bool  g_ever_covered[N_TRACKED];
+static bool  g_dump                = false;
+
+static int handle_event(void *ctx, void *data, size_t sz)
+{
+    (void)ctx;
+    if (sz < sizeof(struct event)) return 0;
+
+    struct event *e = data;
+    if (e->pid != (u32)g_target_pid) return 0;
+
+    for (int i = 0; i < N_TRACKED; i++) {
+        if (e->api_id != TRACKED_IDS[i]) continue;
+        g_run_counts[i]++;
+        g_ever_covered[i] = true;
+        break;
+    }
+
+    if (g_dump)
+        printf("    [event] api_id=%-2u dev=%u tid=%u addr=0x%llx bytes=%llu "
+               "lat_ns=%llu status=%d\n",
+               e->api_id, e->device_id, e->tid,
+               (unsigned long long)e->address,
+               (unsigned long long)e->bytes,
+               (unsigned long long)e->latency_ns,
+               e->status);
+
+    return 0;
+}
 
 /* ── helpers ──────────────────────────────────────────────────────────────*/
 
@@ -60,64 +99,6 @@ static bool env_on(const char *name)
 {
     const char *v = getenv(name);
     return v && *v;
-}
-
-/* Sum agg_map for one pid and one api_id (0 = all). */
-static struct agg_val sum_api(int fd, u32 pid, u32 api)
-{
-    int ncpu = libbpf_num_possible_cpus();
-    struct agg_val *v = calloc(ncpu, sizeof(*v));
-    struct agg_val  t = {0};
-    struct agg_key  cur, next;
-    struct agg_key *prev = NULL;
-
-    while (bpf_map_get_next_key(fd, prev, &next) == 0) {
-        if (next.pid == pid &&
-            (api == 0 || next.api_id == api) &&
-            bpf_map_lookup_elem(fd, &next, v) == 0) {
-            for (int i = 0; i < ncpu; i++) {
-                t.calls      += v[i].calls;
-                t.bytes      += v[i].bytes;
-                t.latency_ns += v[i].latency_ns;
-                t.errors     += v[i].errors;
-                if (v[i].max_latency_ns > t.max_latency_ns)
-                    t.max_latency_ns = v[i].max_latency_ns;
-            }
-        }
-        cur  = next;
-        prev = &cur;
-    }
-    free(v);
-    return t;
-}
-
-/* Print full agg_map for one pid (DUMP=1). */
-static void dump_agg(int fd, u32 pid)
-{
-    int ncpu = libbpf_num_possible_cpus();
-    struct agg_val *v = calloc(ncpu, sizeof(*v));
-    struct agg_key  cur, next;
-    struct agg_key *prev = NULL;
-
-    printf("    [dump pid %u]\n", pid);
-    while (bpf_map_get_next_key(fd, prev, &next) == 0) {
-        if (next.pid == pid && bpf_map_lookup_elem(fd, &next, v) == 0) {
-            u64 calls = 0, bytes = 0, lat = 0;
-            for (int i = 0; i < ncpu; i++) {
-                calls += v[i].calls;
-                bytes += v[i].bytes;
-                lat   += v[i].latency_ns;
-            }
-            printf("    api_id=%-2u dev=%u calls=%llu bytes=%llu lat_ns=%llu\n",
-                   next.api_id, next.device_id,
-                   (unsigned long long)calls,
-                   (unsigned long long)bytes,
-                   (unsigned long long)lat);
-        }
-        cur  = next;
-        prev = &cur;
-    }
-    free(v);
 }
 
 /* Fork a child that waits on a pipe before execl(). */
@@ -180,6 +161,7 @@ int main(int argc, char **argv)
 {
     const char *dir = argc > 1 ? argv[1] : "build";
     const char *lib = env_on("LIBCUDA") ? getenv("LIBCUDA") : "libcuda.so.1";
+    g_dump = env_on("DUMP");
 
     /* 1. environment */
     if (geteuid() != 0)        { printf("SKIP: run as root\n");              return SKIP; }
@@ -246,11 +228,22 @@ int main(int argc, char **argv)
         return SKIP;
     }
 
+    /* open the ring buffer once — this is the only channel cuda_actions
+     * probes have to userspace, so there's no way to skip this step. */
+    struct ring_buffer *rb = ring_buffer__new(
+        bpf_map__fd(skel->maps.events_pipe), handle_event, NULL, NULL);
+    if (!rb) {
+        printf("FAIL: ring_buffer__new failed\n");
+        cuda_actions_bpf__destroy(skel);
+        return FAIL;
+    }
+
     /* 4. loop kernels */
     char *kpaths[64];
     int   nk = scan_kernels(dir, kpaths, 64);
     if (nk == 0) {
         printf("SKIP: no k* binaries in %s\n", dir);
+        ring_buffer__free(rb);
         cuda_actions_bpf__destroy(skel);
         return SKIP;
     }
@@ -261,11 +254,7 @@ int main(int argc, char **argv)
         printf("  %10s", TRACKED_NAMES[i]);
     printf("  result\n");
 
-    bool covered[N_TRACKED];
-    memset(covered, 0, sizeof(covered));
     int fail = 0;
-
-    int agg_fd = bpf_map__fd(skel->maps.agg_map);
 
     for (int k = 0; k < nk; k++) {
         const char *kname = strrchr(kpaths[k], '/') + 1;
@@ -278,26 +267,29 @@ int main(int argc, char **argv)
             continue;
         }
 
+        g_target_pid = pid;
+        memset(g_run_counts, 0, sizeof(g_run_counts));
+
         int rc = release_and_wait(pid, go);
 
-        if (env_on("DUMP"))
-            dump_agg(agg_fd, (u32)pid);
+        /* the workload has exited, but its events are still sitting in the
+         * ring buffer until we drain it — one poll is enough, nothing more
+         * will show up for a pid that's already gone. */
+        ring_buffer__poll(rb, 100);
 
         /* print row */
         printf("  %-10s", kname);
-        struct agg_val total = sum_api(agg_fd, (u32)pid, 0);
-
+        u64 total = 0;
         for (int i = 0; i < N_TRACKED; i++) {
-            struct agg_val v = sum_api(agg_fd, (u32)pid, TRACKED_IDS[i]);
-            if (v.calls > 0) covered[i] = true;
-            if (v.calls == 0) printf("  %10s", ".");
-            else              printf("  %10llu", (unsigned long long)v.calls);
+            total += g_run_counts[i];
+            if (g_run_counts[i] == 0) printf("  %10s", ".");
+            else                      printf("  %10llu", (unsigned long long)g_run_counts[i]);
         }
 
         if (rc != 0) {
             printf("  FAIL(exit %d)\n", rc);
             fail = 1;
-        } else if (total.calls == 0) {
+        } else if (total == 0) {
             printf("  FAIL(no probes fired)\n");
             fail = 1;
         } else {
@@ -310,12 +302,13 @@ int main(int argc, char **argv)
     /* 5. coverage */
     printf("\ncoverage\n");
     for (int i = 0; i < N_TRACKED; i++) {
-        if (!covered[i])
+        if (!g_ever_covered[i])
             printf("  WARN  %s not triggered by any kernel\n", TRACKED_NAMES[i]);
         else
             printf("  ok    %s\n", TRACKED_NAMES[i]);
     }
 
+    ring_buffer__free(rb);
     cuda_actions_bpf__destroy(skel);
 
     printf("\ncuda_actions_test: %s\n", fail ? "FAIL" : "PASS");

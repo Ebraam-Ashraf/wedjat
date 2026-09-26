@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <thread>
 #include <vector>
+#include <unistd.h>
 
 #define CUDA_CHECK(call)                                                        \
     do {                                                                        \
@@ -74,5 +75,8 @@ int main() {
     CUDA_CHECK(cudaFree(device));
 
     std::printf("WEDJAT_FIXTURE_DONE name=k1_basic_launch sample=%f\n", host[0]);
+    if (sleep_ms > 0) {
+        usleep(sleep_ms * 1000);
+    }
     return 0;
 }

@@ -1,7 +1,7 @@
 #include<vmlinux.h>
 #include<bpf/bpf_helpers.h>
 #include<bpf/bpf_tracing.h>
-#include"../../common.h"
+#include"../common.h"
 
 
 // All probes here are // n — no fixed order, any can fire many times in any sequence.
@@ -58,7 +58,7 @@ int BPF_KRETPROBE(trace_cuMemAlloc_v2_ret, long ret)
         e->latency_ns = e->ts_ns - val->start_ts_ns;
         e->pid        = (u32)(pid_tgid >> 32);
         e->tid        = tid;
-        e->device_id  = dev ? *dev : 0;
+        e->device_id  = dev ? *dev : 0xffffffff;
         e->address    = 0;
         e->bytes      = val->arg1;
         e->status     = (s32)ret;
@@ -109,7 +109,7 @@ int BPF_KRETPROBE(trace_cuMemAlloc_ret, long ret)
         e->latency_ns = e->ts_ns - val->start_ts_ns;
         e->pid        = (u32)(pid_tgid >> 32);
         e->tid        = tid;
-        e->device_id  = dev ? *dev : 0;
+        e->device_id  = dev ? *dev : 0xffffffff;
         e->address    = 0;
         e->bytes      = val->arg1;
         e->status     = (s32)ret;
@@ -563,7 +563,7 @@ int BPF_KRETPROBE(trace_cuStreamSynchronize_ret, long ret)
         e->latency_ns = e->ts_ns - val->start_ts_ns;
         e->pid        = (u32)(pid_tgid >> 32);
         e->tid        = tid;
-        e->device_id  = dev ? *dev : 0;
+        e->device_id  = dev ? *dev : 0xffffffff;
         e->address    = val->arg1;
         e->bytes      = 0;
         e->status     = (s32)ret;
@@ -614,7 +614,7 @@ int BPF_KRETPROBE(trace_cuStreamSynchronize_ptsz_ret, long ret)
         e->latency_ns = e->ts_ns - val->start_ts_ns;
         e->pid        = (u32)(pid_tgid >> 32);
         e->tid        = tid;
-        e->device_id  = dev ? *dev : 0;
+        e->device_id  = dev ? *dev : 0xffffffff;
         e->address    = val->arg1;
         e->bytes      = 0;
         e->status     = (s32)ret;
@@ -665,7 +665,7 @@ int BPF_KRETPROBE(trace_cuCtxSynchronize_ret, long ret)
         e->latency_ns = e->ts_ns - val->start_ts_ns;
         e->pid        = (u32)(pid_tgid >> 32);
         e->tid        = tid;
-        e->device_id  = dev ? *dev : 0;
+        e->device_id  = dev ? *dev : 0xffffffff;
         e->address    = 0;
         e->bytes      = 0;
         e->status     = (s32)ret;

@@ -2,10 +2,20 @@
 #define WEDJAT_COMMON_H
 
 #ifdef __bpf__
+/* vmlinux.h (when used) already provides all kernel types and defines
+ * __VMLINUX_H__.  In that case skip the system bpf headers to avoid
+ * redefinition collisions.  When vmlinux.h is NOT used (e.g. older
+ * out-of-tree builds), pull in the system headers as before.          */
+#ifndef __VMLINUX_H__
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
-
+#endif
+#else  /* userspace — plain C test/loader files */
+#include <linux/types.h>
+typedef __u32 u32;
+typedef __u64 u64;
+typedef __s32 s32;
 #endif
 
 // i think it's easier rather that strings, in Go part will map it 

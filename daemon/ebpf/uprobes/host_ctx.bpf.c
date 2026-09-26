@@ -1,7 +1,7 @@
 #include<vmlinux.h>
 #include<bpf/bpf_helpers.h>
 #include<bpf/bpf_tracing.h>
-#include"../../common.h"
+#include"../common.h"
 
 
 // https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__CTX.html#_CPPv415cuCtxSetCurrent9CUcontext
@@ -91,6 +91,7 @@ int BPF_KRETPROBE(trace_cuDevicePrimaryCtxRetain_ret, long ret)
         if(bpf_probe_read_user(&ctx, sizeof(ctx), (void *)val->arg1) == 0)
         {
             bpf_map_update_elem(&ctx_to_device, &ctx, &dev, BPF_ANY);
+            bpf_map_update_elem(&tid_to_device, &tid, &dev, BPF_ANY);
         }
     }
 
@@ -108,17 +109,17 @@ WRITE Map 2 (tid_to_device): We update Thread 1001's current state. We overwrite
 1. The Switch Event (cuCtxSetCurrent)To change GPUs, the CPU thread calls cuCtxSetCurrent(new_ctx).Hooks Called:uprobe/cuCtxSetCurrent (or cuCtxSetCurrent_ptsz / cuCtxPushCurrent_v2)Map Operations:Lookup in ctx_to_device: Read new_ctx $\rightarrow$ returns GPU 1.Overwrite in tid_to_device: Update key TID with value GPU 1 using BPF_ANY.State Change:
 */
 SEC("uprobe/cuCtxSetCurrent")
-int BPF_KPROBE(trace_cuCtxSetCurrent,void *ctx)
+int BPF_KPROBE(trace_cuCtxSetCurrent,void *cu_ctx)
 {
     u32 tid = bpf_get_current_pid_tgid();
 
-    if(!ctx)
+    if(!cu_ctx)
     {
 
         return 0;
     }
 
-    u64 ctx_key = (u64)ctx;
+    u64 ctx_key = (u64)cu_ctx;
     u32 *dev = bpf_map_lookup_elem(&ctx_to_device, &ctx_key);
     if(!dev)
     {
@@ -132,16 +133,16 @@ int BPF_KPROBE(trace_cuCtxSetCurrent,void *ctx)
 
 // 9. Same as cuCtxSetCurrent but for the POSIX thread-safe (_ptsz) stream variant.
 SEC("uprobe/cuCtxSetCurrent_ptsz")
-int BPF_KPROBE(trace_cuCtxSetCurrent_ptsz, void *ctx)
+int BPF_KPROBE(trace_cuCtxSetCurrent_ptsz, void *cu_ctx)
 {
     u32 tid = (u32)bpf_get_current_pid_tgid();
 
-    if(!ctx)
+    if(!cu_ctx)
     {
         return 0;
     }
 
-    u64 ctx_key = (u64)ctx;
+    u64 ctx_key = (u64)cu_ctx;
     u32 *dev = bpf_map_lookup_elem(&ctx_to_device, &ctx_key);
     if(!dev)
     {
@@ -156,16 +157,16 @@ int BPF_KPROBE(trace_cuCtxSetCurrent_ptsz, void *ctx)
 // 10. Thread pushes a context onto its private stack (alternative bind path).
 //     We look up ctx in ctx_to_device and write [TID -> GPU ID] into tid_to_device.
 SEC("uprobe/cuCtxPushCurrent_v2")
-int BPF_KPROBE(trace_cuCtxPushCurrent_v2, void *ctx)
+int BPF_KPROBE(trace_cuCtxPushCurrent_v2, void *cu_ctx)
 {
     u32 tid = (u32)bpf_get_current_pid_tgid();
 
-    if(!ctx)
+    if(!cu_ctx)
     {
         return 0;
     }
 
-    u64 ctx_key = (u64)ctx;
+    u64 ctx_key = (u64)cu_ctx;
     u32 *dev = bpf_map_lookup_elem(&ctx_to_device, &ctx_key);
     if(!dev)
     {
@@ -193,9 +194,9 @@ int BPF_KPROBE(trace_cuCtxPopCurrent_v2, void *pctx)
 // 12. Explicit context destruction — GPU session ends.
 //     We delete the ctx key from ctx_to_device.
 SEC("uprobe/cuCtxDestroy_v2")
-int BPF_KPROBE(trace_cuCtxDestroy_v2, void *ctx)
+int BPF_KPROBE(trace_cuCtxDestroy_v2, void *cu_ctx)
 {
-    u64 ctx_key = (u64)ctx;
+    u64 ctx_key = (u64)cu_ctx;
 
     bpf_map_delete_elem(&ctx_to_device, &ctx_key);
 

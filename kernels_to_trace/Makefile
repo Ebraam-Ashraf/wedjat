@@ -1,12 +1,17 @@
 BUILD := build
 
-all: $(BUILD) $(patsubst %.cu,$(BUILD)/%,$(wildcard k*.cu))
+.PHONY: all build clean
 
-$(BUILD):
-	mkdir -p $@
+# 'build' is a phony alias for 'all'.
+# Do NOT list $(BUILD) as a prerequisite here — that would clash with .PHONY: build
+# since $(BUILD) expands to 'build', causing a circular dependency.
+# The mkdir is handled inline in the pattern rule below instead.
+all: $(patsubst %.cu,$(BUILD)/%,$(wildcard k*.cu))
+build: all
 
 $(BUILD)/%: %.cu
-	nvcc -o $@ $<
+	@mkdir -p $(BUILD)
+	nvcc -arch=native -o $@ $<
 
 clean:
 	rm -rf $(BUILD)

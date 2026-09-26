@@ -1,126 +1,85 @@
-# Kprobe Tests
+# kprobes/test
 
-This directory tests Wedjat's Layer 3 eBPF kprobe programs.
-
----
-
-## How This Differs From uprobes/test
-
-`uprobes/test` attaches to **userspace** symbols in `libcuda.so`.
-This directory attaches to **kernel** symbols in `nvidia.ko` and `nvidia-uvm.ko`,
-and to Linux kernel tracepoints.
-
-The test harness shape is identical: fork a CUDA fixture, poll a ring buffer,
-assert on what the probe captured.  The difference is:
-
-- These probes fire system-wide — not just for the fixture process.  We must
-  filter on `pid` in the ring buffer callback.
-- NVIDIA kernel symbols (`nvidia_unlocked_ioctl`, `uvm_*`) are only present
-  when the NVIDIA kernel modules are loaded.  The test checks `/proc/kallsyms`
-  first and prints `SKIP` if the symbol is absent, rather than crashing.
-- Running requires root (`CAP_BPF` + `CAP_PERFMON`) and a loaded `nvidia.ko`.
+Tests for `driver_kprobes.bpf.c`.
 
 ---
 
-## BPF Program Under Test
-
-```text
-driver_kprobes.bpf.c  (one directory up: daemon/ebpf/kprobes/)
-
-Probes:
-  kprobe  + kretprobe  nvidia_unlocked_ioctl   (all CUDA driver calls)
-  kprobe               uvm_vm_fault_entry       (UVM page faults)
-  kprobe               uvm_migrate              (managed memory migration)
-  tracepoint           sched/sched_switch       (GPU thread preemption)
-```
-
----
-
-## CUDA Inputs
-
-Same fixtures as uprobes/test — they live in `kernels_to_trace/build/`.
-
-```text
-k1    CUDA Runtime API: kernel launches
-k2    CUDA Driver API:  cuMemAlloc / cuMemFree / cuStreamSynchronize
-```
-
-Both call into `nvidia_unlocked_ioctl` under the hood.  `k2` is the default
-because its Driver API calls map more directly to observable driver ioctls.
-
----
-
-## Commands
+## Build & Run
 
 ```sh
-# Build everything (BPF object → skeleton → test binary → CUDA fixtures)
-make -C daemon/ebpf/kprobes/test build
-make -C daemon/ebpf/kprobes/test build-inputs
+cd daemon/ebpf/kprobes/test
 
-# Run all tests
-sudo make -C daemon/ebpf/kprobes/test test
+make                          # build everything → build/
+make run                      # build + run driver_kprobes_test (needs sudo + nvidia.ko)
+make run TARGET=driver_kprobes  # same thing (explicit)
+make clean                    # wipe build/
 
-# Run against one specific fixture
-sudo make -C daemon/ebpf/kprobes/test test-one PROGRAM=k2
-sudo make -C daemon/ebpf/kprobes/test test-one PROGRAM=k1
-
-# See available fixtures
-make -C daemon/ebpf/kprobes/test list
+# useful variables
+make run DUMP=1               # also print every raw event while running
 ```
 
 ---
 
-## What `test-one` Does (once BPF code exists)
+## What The Test Does
+
+Loads `driver_kprobes.bpf.o` and attaches all kernel probes once.
+For every `k*` binary found in `build/`:
+
+1. Fork + exec the binary.
+2. Poll `events_pipe` ring buffer while it runs, filtering to that child's pid.
+3. Tally events by `api_id` from `enum event_id` in `common.h`.
+4. Print one row per binary showing call counts per event type.
+5. After all binaries, print a coverage summary — warn about any `EVENT_*`
+   id that no binary triggered.
 
 ```text
-Level 1+2  Build and load driver_kprobes.bpf.o.
-           Does clang compile it? Does the kernel verifier accept it?
+kernel      IOCTL   MMAP   UVM_FAULT   UVM_MIGRATE   UVM_EVICT   result
+k1              20      1            0             0           0   ok
+k2               5      3            0             0           0   ok
+k3              24      4            1             2           1   ok
+```
 
-Level 3    Check /proc/kallsyms for nvidia_unlocked_ioctl.
-           Attach kprobes (auto-attach from SEC() names in the skeleton).
-           Run kernels_to_trace/build/k2.
-           Does at least one ioctl event arrive in the ring buffer?
+Tracked events: `EVENT_IOCTL`, `EVENT_MMAP`, `EVENT_UVM_FAULT`,
+`EVENT_UVM_MIGRATE`, `EVENT_UVM_EVICT`.
 
-Level 4    Read the event.
-           Assert pid matches k2's pid.
-           Assert latency_ns > 0.
-           Assert ioctl_counts map has a non-zero entry for k2's pid.
+Probes and the events they emit:
+
+```text
+kprobe + kretprobe  nvidia_ioctl               -> EVENT_IOCTL
+kprobe + kretprobe  uvm_ioctl                  -> EVENT_IOCTL
+kprobe + kretprobe  nvidia_mmap                -> EVENT_MMAP
+kprobe + kretprobe  uvm_va_block_service_fault -> EVENT_UVM_FAULT
+kprobe + kretprobe  uvm_migrate                -> EVENT_UVM_MIGRATE
+kprobe + kretprobe  uvm_va_block_evict_pages   -> EVENT_UVM_EVICT
+kprobe              do_sys_openat2             (filter-only, emits nothing)
+kprobe              queued_spin_lock_slowpath  (no-op stub, emits nothing)
 ```
 
 ---
 
-## Current State
+## Environment Variables
 
-`driver_kprobes.bpf.c` is written with real BPF code.  The skeleton
-(`driver_kprobes.skel.h`) does not exist yet — it is generated from the
-compiled `.bpf.o` file.
-
-Test file in this directory:
-
-```text
-driver_kprobes_test.c   real harness shape, BPF loader/attach in TODO blocks,
-                        kallsyms check is real and active today
-```
-
-When the BPF implementation is ready:
-
-```text
-1. make -C daemon/ebpf/kprobes/test build-bpf
-     -> compiles driver_kprobes.bpf.o
-     -> generates driver_kprobes.skel.h
-
-2. Uncomment the skeleton loader/attach/ringbuf blocks in driver_kprobes_test.c
-
-3. sudo make -C daemon/ebpf/kprobes/test test
-```
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `DUMP` | unset | Print every raw `struct event` while running |
 
 ---
 
-## Adding A New Probe
+## Requirements
+
+- Root (`sudo`, `CAP_BPF` + `CAP_PERFMON`)
+- NVIDIA driver + GPU (`/dev/nvidiactl`)
+- `nvidia.ko` and `nvidia-uvm.ko` loaded
+- `clang`, `bpftool`, `libbpf-dev`
+
+Missing root or GPU → exit `77` (SKIP), not `FAIL`.
+
+---
+
+## Adding a New Probe
 
 ```text
-1. Add the SEC("kprobe/new_symbol") probe to driver_kprobes.bpf.c
-2. Add a test function in driver_kprobes_test.c following the same shape
-3. Call it from main()
-4. Add new_symbol to the kallsyms check in the test
+driver_kprobes.bpf.c    add the SEC("kprobe/new_symbol") probe
+driver_kprobes_test.c   add the EVENT_* id to TRACKED_IDS[] and TRACKED_NAMES[]
+                        add new_symbol to hooks[]
 ```

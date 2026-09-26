@@ -1,43 +1,115 @@
-KDIR  := ../../../../kernels_to_trace
+SHELL := /bin/bash
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+ROOT          := ../../../..
+KERNELS_DIR   := $(ROOT)/kernels_to_trace
+KERNELS_BUILD := $(KERNELS_DIR)/build
+BPF_SRC_DIR   := ..
+
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
+
+CC      := clang
+BPF_CC  := clang
+BPFTOOL := bpftool
+ARCH    := $(shell uname -m | sed 's/x86_64/x86/;s/aarch64/arm64/')
+
+# ---------------------------------------------------------------------------
+# Build output
+# ---------------------------------------------------------------------------
+
 BUILD := build
-ARCH  := $(shell uname -m | sed 's/x86_64/x86/;s/aarch64/arm64/')
+
+# ---------------------------------------------------------------------------
+# Flags
+# ---------------------------------------------------------------------------
+
+BPF_CFLAGS := -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) -D__bpf__ \
+              -I$(BUILD) -I../..
+
+HAVE_PKG_CONFIG := $(shell command -v pkg-config 2>/dev/null)
+ifdef HAVE_PKG_CONFIG
+    CFLAGS := -Wall -Wextra -O1 $(shell pkg-config --cflags libbpf 2>/dev/null)
+    LIBS   := $(shell pkg-config --libs libbpf 2>/dev/null) -lelf -lz
+else
+    CFLAGS := -Wall -Wextra -O1
+    LIBS   := -lbpf -lelf -lz
+endif
 
 .PHONY: all run clean
-.SECONDARY:
 
-all: $(BUILD)/cuda_actions_test $(BUILD)/host_ctx_test \
-     $(patsubst $(KDIR)/%.cu,$(BUILD)/%,$(wildcard $(KDIR)/k*.cu))
+all: build-bpf build-tests build-inputs
 
-$(BUILD):
-	mkdir -p $@
+# ---------------------------------------------------------------------------
+# BPF compilation + skeleton generation
+# ---------------------------------------------------------------------------
 
-# kernel binaries
-$(BUILD)/%: $(KDIR)/%.cu | $(BUILD)
-	nvcc -o $@ $<
+$(BUILD)/.d:
+	@mkdir -p $(BUILD)
+	@touch $@
 
-# vmlinux.h
-$(BUILD)/vmlinux.h: | $(BUILD)
+$(BUILD)/vmlinux.h: | $(BUILD)/.d
 	bpftool btf dump file /sys/kernel/btf/vmlinux format c > $@
 
-# BPF objects
-$(BUILD)/%.bpf.o: ../%.bpf.c ../../common.h $(BUILD)/vmlinux.h | $(BUILD)
-	clang -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) -I$(BUILD) -I../.. -c $< -o $@
+$(BUILD)/%.bpf.o: $(BPF_SRC_DIR)/%.bpf.c \
+    $(BPF_SRC_DIR)/../common.h $(BUILD)/vmlinux.h | $(BUILD)/.d
+	$(BPF_CC) $(BPF_CFLAGS) -c $< -o $@
 
-# skeletons
 $(BUILD)/%.skel.h: $(BUILD)/%.bpf.o
-	bpftool gen skeleton $< > $@
+	$(BPFTOOL) gen skeleton $< > $@
 
-# test binaries
-$(BUILD)/cuda_actions_test: cuda_actions_test.c ../../common.h $(BUILD)/cuda_actions.skel.h
-	$(CC) -g -Wall -I$(BUILD) -I../.. $< -lbpf -lelf -lz -o $@
+build-bpf: $(BUILD)/cuda_actions.skel.h $(BUILD)/host_ctx.skel.h
 
-$(BUILD)/host_ctx_test: host_ctx_test.c ../../common.h $(BUILD)/host_ctx.skel.h
-	$(CC) -g -Wall -I$(BUILD) -I../.. $< -lbpf -lelf -lz -o $@
+# ---------------------------------------------------------------------------
+# Test harness compilation
+# ---------------------------------------------------------------------------
 
-# run both tests
+$(BUILD)/cuda_actions_test: cuda_actions_test.c \
+    $(BPF_SRC_DIR)/../common.h \
+    $(BUILD)/cuda_actions.skel.h $(BUILD)/host_ctx.skel.h | $(BUILD)/.d
+	$(CC) $(CFLAGS) -I$(BUILD) -I../.. -o $@ $< $(LIBS)
+
+$(BUILD)/host_ctx_test: host_ctx_test.c \
+    $(BPF_SRC_DIR)/../common.h \
+    $(BUILD)/host_ctx.skel.h | $(BUILD)/.d
+	$(CC) $(CFLAGS) -I$(BUILD) -I../.. -o $@ $< $(LIBS)
+
+build-tests: $(BUILD)/cuda_actions_test $(BUILD)/host_ctx_test
+
+# ---------------------------------------------------------------------------
+# CUDA fixture inputs
+# ---------------------------------------------------------------------------
+
+build-inputs:
+	$(MAKE) -C $(KERNELS_DIR) build
+
+# ---------------------------------------------------------------------------
+# Test execution
+# ---------------------------------------------------------------------------
+
+# Usage:
+#   make run                  # run all tests
+#   make run TARGET=cuda_actions
+#   make run TARGET=host_ctx
+
+TARGET ?= all
+
 run: all
-	sudo env LIBCUDA="$(LIBCUDA)" DUMP="$(DUMP)" $(BUILD)/cuda_actions_test $(BUILD)
-	sudo env LIBCUDA="$(LIBCUDA)" DUMP="$(DUMP)" $(BUILD)/host_ctx_test     $(BUILD)
+ifeq ($(TARGET),all)
+	sudo env LIBCUDA="$(LIBCUDA)" DUMP="$(DUMP)" $(BUILD)/cuda_actions_test $(KERNELS_BUILD)
+	sudo env LIBCUDA="$(LIBCUDA)" DUMP="$(DUMP)" $(BUILD)/host_ctx_test     $(KERNELS_BUILD)
+else
+	sudo env LIBCUDA="$(LIBCUDA)" DUMP="$(DUMP)" $(BUILD)/$(TARGET)_test $(KERNELS_BUILD)
+endif
+
+# ---------------------------------------------------------------------------
+# Cleanup
+# ---------------------------------------------------------------------------
 
 clean:
-	rm -rf $(BUILD)
+	$(RM) -r $(BUILD)
+	$(MAKE) -C $(KERNELS_DIR) clean

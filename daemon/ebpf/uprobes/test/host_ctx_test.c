@@ -32,9 +32,6 @@
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 
-typedef __u32 u32;
-typedef __u64 u64;
-
 #include "common.h"
 #include "host_ctx.skel.h"
 
@@ -61,6 +58,7 @@ static pid_t spawn_paused(const char *path, int *go_fd)
         char c;
         close(p[1]);
         if (read(p[0], &c, 1) != 1) _exit(126);
+        setenv("WEDJAT_SLEEP_MS", "200", 1);
         execl(path, path, (char *)NULL);
         _exit(127);
     }
@@ -69,14 +67,11 @@ static pid_t spawn_paused(const char *path, int *go_fd)
     return pid;
 }
 
-/* Release child and wait for it to finish. */
-static int release_and_wait(pid_t pid, int go_fd)
+/* Release child, but do NOT wait for it here — we need to poll while it runs. */
+static void release_child(int go_fd)
 {
-    int st = 0;
     if (write(go_fd, "x", 1) != 1) perror("write");
     close(go_fd);
-    waitpid(pid, &st, 0);
-    return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 }
 
 /* Scan dir for executable files starting with 'k' and no dot in the name. */
@@ -197,12 +192,32 @@ int main(int argc, char **argv)
             continue;
         }
 
-        int rc = release_and_wait(pid, go);
+        release_child(go);
 
-        /* check tid_to_device — tid == pid for single-threaded programs */
+        /* Poll tid_to_device while the process is running.
+         * The BPF program removes the TID when the context is destroyed on exit,
+         * so we must catch it while it's still alive. */
         u32 tid = (u32)pid;
         u32 dev = 0xffffffff;
-        int found = (bpf_map_lookup_elem(ctx_fd, &tid, &dev) == 0);
+        int found = 0;
+
+        while (1) {
+            if (bpf_map_lookup_elem(ctx_fd, &tid, &dev) == 0) {
+                found = 1;
+                break;
+            }
+            int st = 0;
+            if (waitpid(pid, &st, WNOHANG) > 0) {
+                /* Process exited before we saw the TID. */
+                break;
+            }
+            usleep(1000);
+        }
+
+        /* Now wait for it to fully exit if it hasn't already. */
+        int st = 0;
+        waitpid(pid, &st, 0);
+        int rc = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 
         printf("  %-10s  %-9s  %-6u  ", kname,
                found ? "yes" : "no",
