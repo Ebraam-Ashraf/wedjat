@@ -40,7 +40,7 @@ else
     LIBS   := -lbpf -lelf -lz
 endif
 
-.PHONY: all run clean
+.PHONY: all test clean
 
 all: build-bpf build-tests build-inputs
 
@@ -98,7 +98,7 @@ build-inputs:
 
 TARGET ?= all
 
-run: all
+test: all
 ifeq ($(TARGET),all)
 	sudo env LIBCUDA="$(LIBCUDA)" DUMP="$(DUMP)" $(BUILD)/cuda_actions_test $(KERNELS_BUILD)
 	sudo env LIBCUDA="$(LIBCUDA)" DUMP="$(DUMP)" $(BUILD)/host_ctx_test     $(KERNELS_BUILD)

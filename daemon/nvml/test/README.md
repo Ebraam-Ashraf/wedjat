@@ -1,155 +1,99 @@
-# NVML Tests
+# nvml/test
 
-This directory tests the user-space NVML polling code in `daemon/nvml/`.
+Tests for `daemon/nvml/poller.c` and `daemon/nvml/xid.c`.
 
----
-
-## This Is Not A BPF Test Directory
-
-`uprobes/test` and `kprobes/test` load BPF objects, attach probes, and
-assert on ring buffer events.
-
-This directory does none of that.  `poller.c` and `xid.c` are plain C
-files that call `libnvidia-ml.so` directly.  There is no kernel program,
-no skeleton, no verifier.  These are integration tests against the real
-NVML API running against a real GPU.
+Not a BPF test directory — no skeleton, no verifier.  These are plain C
+integration tests that link against `libnvidia-ml.so` and run against a real GPU.
 
 ---
 
-## Two Test Files
+## Build & Run
 
-### poller_test — Layer 4 device and process stats
+```sh
+cd daemon/nvml/test
 
-Tests `daemon/nvml/poller.c`.
+make build             # build binaries → build/
+make build-inputs      # CUDA fixture binaries (k1, k2, …)
 
-Two sub-tests:
+make test              # run automated tests
+make run-poller-test
+make run-xid-test
 
-**Global sanity (no fixture needed):**
-Calls `poller_snapshot_device()` and checks the returned values are in
-plausible hardware ranges:
-- `gpu_util` and `mem_util` are 0–100
-- `temp_c` is 0–150°C
-- `mem_total > 0`
-- `mem_used <= mem_total`
-- `uuid` is non-empty
+# manual xid fault test — blocks until a real fault fires, NEVER in CI
+make run-xid-test-manual
 
-These cannot be asserted against exact values — GPU state is not under
-the test's control.
+# override paths if CUDA / libnvidia-ml are not in default locations
+make build CUDA_HOME=/usr/cuda NVML_LIB_DIR=/usr/lib64
+```
 
-**Per-process fixture check:**
-Spawns `k1` (CUDA Runtime API) with a known allocation size (256 MiB of
-floats, controlled via `WEDJAT_N`).  Polls
-`poller_snapshot_processes()` until the child's PID appears in
-`nvmlDeviceGetComputeRunningProcesses_v3` output, or times out.
+---
 
-Asserts:
-- Child PID appears within 20 × 150 ms = 3 seconds
-- Reported `usedGpuMemory` is in `[alloc/2, alloc*4]` range
+## What The Tests Do
 
-The range is intentionally loose — NVML includes driver and context
-overhead that varies across driver versions.  The goal is "NVML is
-reporting this process with a plausible value," not a byte-exact match.
+### poller_test — device and process stats
 
-### xid_test — Layer 4 hardware fault event path
+Tests `poller.c`.  Two sub-tests run in sequence:
 
-Tests `daemon/nvml/xid.c`.
+**1. device snapshot** — calls `poller_snapshot_device(0, …)`, asserts plausible ranges:
+- `gpu_util`, `mem_util` in 0–100
+- `temp_c` in 0–150 °C
+- `mem_total > 0`, `mem_used <= mem_total`
+- `uuid` non-empty
+
+**2. process snapshot** — spawns a CUDA fixture (`k1`) allocating 256 MiB,
+polls `poller_snapshot_processes()` until the child pid appears, then asserts:
+- pid found within 20 × 150 ms = 3 s
+- `usedGpuMemory` in `[alloc/2, alloc*4]` — loose range to absorb driver overhead
+
+```text
+== poller_test ==
+PASS device_snapshot (gpu=12% temp=48°C mem=2048/8192MiB uuid=GPU-a1b2c3d4...)
+PASS process_snapshot (pid=12345 used=258MiB alloc=256MiB)
+
+poller_test: PASS
+```
+
+### xid_test — hardware fault event plumbing
+
+Tests `xid.c` event wiring, not a real fault.
 
 **Automated mode (default, included in `make test`):**
-Creates an event set, registers for `nvmlEventTypeXidCriticalError`,
-waits 500 ms.  No fault is happening.  Pass condition:
-- `XID_WAIT_TIMEOUT` — wiring works, no event = correct
-- `XID_WAIT_NOT_SUPPORTED` — GPU/driver does not support event
-  registration, acceptable, not a failure
-
-Any other result is a FAIL: the plumbing is broken.
+Creates an event set for device 0, registers for `nvmlEventTypeXidCriticalError`,
+waits 500 ms.  Pass conditions:
+- `XID_WAIT_TIMEOUT` — wiring works, no fault = correct
+- `XID_WAIT_NOT_SUPPORTED` → SKIP, not FAIL — some GPUs or driver configs
+  do not support event registration
 
 **Manual mode (`--manual`, NOT in `make test`):**
-Blocks indefinitely waiting for a real hardware fault.  A human runs
-this while separately stressing the GPU or watching `dmesg` for NVRM
-Xid messages.  If a fault fires, logs the full event and exits 0.
-Never run in CI — depends on hardware behaving badly, which cannot be
-scheduled.
+Blocks until a real hardware fault fires.  Run while stressing the GPU
+or watching `dmesg -w | grep -i xid`.  Logs the captured event and exits 0.
+
+```text
+== xid_test ==
+PASS xid_event_plumbing (automated — clean timeout)
+
+xid_test: PASS
+```
+
+---
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| `0`  | PASS |
+| `1`  | FAIL |
+| `77` | SKIP (no GPU, NVML unavailable, or feature not supported) |
 
 ---
 
 ## Requirements
 
 - Real NVIDIA GPU + driver (`nvidia-smi` must work)
-- `libnvidia-ml.so` on the linker path (from the NVIDIA driver package)
-- `nvml.h` (from the CUDA Toolkit, usually at `/usr/local/cuda/include`)
-- Root is **not** required for `poller_test` — NVML device stats are
-  user-accessible.  `xid_test` may need root for
-  `nvmlDeviceRegisterEvents` depending on driver config.
-
----
-
-## Commands
-
-```sh
-# Build stub binaries (no NVML required — for CI or no-GPU machines)
-make -C daemon/nvml/test build
-
-# Build with real libnvidia-ml
-make -C daemon/nvml/test build-nvml
-
-# Build CUDA fixture binaries
-make -C daemon/nvml/test build-inputs
-
-# Run automated tests (stub mode by default)
-make -C daemon/nvml/test test
-
-# Run with real NVML (requires GPU + libnvidia-ml)
-make -C daemon/nvml/test test USE_NVML=1
-
-# Run just poller test
-make -C daemon/nvml/test run-poller-test USE_NVML=1
-
-# Run just xid plumbing test
-make -C daemon/nvml/test run-xid-test USE_NVML=1
-
-# Manual xid fault test — blocks until fault fires, NEVER in CI
-make -C daemon/nvml/test run-xid-test-manual USE_NVML=1
-
-# Override paths if CUDA / libnvidia-ml are in non-default locations
-make -C daemon/nvml/test build-nvml CUDA_HOME=/usr/cuda NVML_LIB_DIR=/usr/lib64
-```
-
----
-
-## Current State
-
-`poller.c` and `xid.c` have real function signatures but all NVML calls
-are in TODO comments — not implemented yet.  Both test files compile and
-run today in stub mode, printing SKIP for the NVML assertions.
-
-When the implementation is ready:
-```text
-1. Uncomment the NVML TODO blocks in poller.c and xid.c.
-2. make -C daemon/nvml/test build-nvml
-3. make -C daemon/nvml/test test USE_NVML=1
-```
-
----
-
-## Adding A New Test
-
-```text
-1. Decide: is this a global stat (no fixture) or per-process (needs fixture)?
-2. Write <name>_test.c using NVML_CHECK / ASSERT_TRUE / ASSERT_IN_RANGE.
-3. Add build rules to Makefile: stub + nvml variants.
-4. Add a run-<name>-test target.
-5. If safe for automated runs, add it to the test: target.
-   If it depends on unpredictable hardware behavior, keep it as a separate
-   manual target like run-xid-test-manual.
-6. Add a section to this README.
-```
-
-## Modifying A Test
-
-If you change the expected allocation size in `poller_test.c`, the range
-check `[alloc/2, alloc*4]` should stay as-is.  Do not tighten it to an
-exact byte match — NVML's reported memory includes driver overhead that
-is not under the test's control.
+- `libnvidia-ml.so` (from the NVIDIA driver package — usually `/usr/lib/x86_64-linux-gnu`)
+- `nvml.h` (from the CUDA Toolkit — usually `/usr/local/cuda/include`)
+- Root is **not** required for `poller_test`
+- Root **may** be required for `xid_test` (`nvmlDeviceRegisterEvents`) depending on driver config
 
 ---
 
@@ -158,9 +102,19 @@ is not under the test's control.
 ```text
 uprobes/test/    BPF tests — host CPU: who called CUDA, what parameters
 kprobes/test/    BPF tests — kernel driver: ioctl latency, UVM faults
-device/test/     CUPTI tests — GPU SMs: utilization, warp stalls
 nvml/test/       NVML tests — device totals: temp, power, VRAM, active PIDs
 ```
 
-All four share the same fixture programs (`k1`, `k2`, `k8`) and the same
-fork/exec/assert harness shape.
+All share the same fixture programs (`k1`, `k2`, …) and the same fork/exec/assert shape.
+
+---
+
+## Adding a New Test
+
+```text
+1. Write <name>_test.c — use PASS/FAIL/SKIP macros, numbered main flow.
+2. Add stub + nvml build rules to Makefile.
+3. Add a run-<name>-test target.
+4. Add it to test: if safe for automated runs; otherwise make it a manual target.
+5. Add a section here.
+```

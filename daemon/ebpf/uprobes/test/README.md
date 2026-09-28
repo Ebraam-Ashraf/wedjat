@@ -10,14 +10,14 @@ Tests for `cuda_actions.bpf.c` and `host_ctx.bpf.c`.
 cd daemon/ebpf/uprobes/test
 
 make                          # build everything → build/
-make run                      # build + run both tests (needs sudo + GPU)
-make run TARGET=cuda_actions   # run only cuda_actions_test
-make run TARGET=host_ctx      # run only host_ctx_test
+make test                     # build + run both tests (needs sudo + GPU)
+make test TARGET=cuda_actions  # run only cuda_actions_test
+make test TARGET=host_ctx     # run only host_ctx_test
 make clean                    # wipe build/
 
 # useful variables
-make run DUMP=1               # also print every raw event after each kernel
-make run LIBCUDA=/path/to/libcuda.so.1   # override libcuda path if needed
+make test DUMP=1              # also print every raw event after each kernel
+make test LIBCUDA=/path/to/libcuda.so.1   # override libcuda path if needed
 ```
 
 ---

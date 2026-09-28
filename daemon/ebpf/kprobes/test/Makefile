@@ -40,7 +40,7 @@ else
     LIBS   := -lbpf -lelf -lz
 endif
 
-.PHONY: all run clean
+.PHONY: all test clean
 
 all: build-bpf build-tests build-inputs
 
@@ -99,7 +99,7 @@ check-modules:
 		echo "==> nvidia-uvm.ko already loaded"; \
 	fi
 
-run: all check-modules
+test: all check-modules
 	sudo env DUMP="$(DUMP)" $(BUILD)/$(TARGET)_test $(KERNELS_BUILD)
 
 # ---------------------------------------------------------------------------

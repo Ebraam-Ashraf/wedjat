@@ -10,12 +10,12 @@ Tests for `driver_kprobes.bpf.c`.
 cd daemon/ebpf/kprobes/test
 
 make                          # build everything → build/
-make run                      # build + run driver_kprobes_test (needs sudo + nvidia.ko)
-make run TARGET=driver_kprobes  # same thing (explicit)
+make test                     # build + run driver_kprobes_test (needs sudo + nvidia.ko)
+make test TARGET=driver_kprobes  # same thing (explicit)
 make clean                    # wipe build/
 
 # useful variables
-make run DUMP=1               # also print every raw event while running
+make test DUMP=1              # also print every raw event while running
 ```
 
 ---
