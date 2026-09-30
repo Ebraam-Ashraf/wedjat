@@ -1,217 +1,181 @@
-#include<vmlinux.h>
-#include<bpf/bpf_helpers.h>
-#include<bpf/bpf_tracing.h>
-#include"../common.h"
+#include <vmlinux.h>
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
+#include "../common.h"
 
-
-// https://docs.nvidia.com/cuda/cuda-driver-api/cuda_driver_api/group__CUDA__CTX.html#_CPPv415cuCtxSetCurrent9CUcontext
-
-// 5. Context created — entry captures the target device ordinal (which GPU).
-SEC("uprobe/cuCtxCreate_v2")
-int BPF_KPROBE(trace_cuCtxCreate_v2, void *pctx, u32 flags, u32 dev)
+static __always_inline struct ctx_key process_ctx_key(u64 pid_tgid, u64 ctx)
 {
-    u32 tid = (u32)bpf_get_current_pid_tgid();
+    struct ctx_key key = { .tgid = (u32)(pid_tgid >> 32), .ctx = ctx };
+    return key;
+}
 
-    // stash the out-param address (arg1) and the device ordinal (start_ts_ns,
-    // repurposed here as plain scratch — ctx create/destroy is bookkeeping
-    // only, no latency is measured in this file) so the uretprobe below can
-    // read back the freshly created ctx handle and pair it with its GPU.
-    struct inflight_val val = {};
-    val.arg1        = (u64)pctx;
-    val.start_ts_ns = (u64)dev;
+static __always_inline void bind_context(u64 ctx)
+{
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct thread_key thread = { .pid_tgid = pid_tgid };
+    struct ctx_key key = process_ctx_key(pid_tgid, ctx);
+    u32 *device = bpf_map_lookup_elem(&ctx_to_device, &key);
 
-    bpf_map_update_elem(&inflight_map, &tid, &val, BPF_ANY);
+    if (!ctx || !device) {
+        bpf_map_delete_elem(&tid_to_device, &thread);
+        return;
+    }
+    bpf_map_update_elem(&tid_to_device, &thread, device, BPF_ANY);
+}
 
+static __always_inline int remember_context_output(void *out, u32 device, u32 api_id)
+{
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct inflight_key key = make_inflight_key(pid_tgid, api_id);
+    struct inflight_val value = { .arg1 = (u64)out, .device_ordinal = device };
+
+    if (bpf_map_update_elem(&ctx_inflight_map, &key, &value, BPF_ANY) != 0)
+        stats_add(api_id, STAT_MAP_UPDATE_FAILURE);
     return 0;
 }
 
-// 6. Context created — return, the new ctx handle is now valid.
-//    We write [ctx -> GPU ID] into ctx_to_device.
+static __always_inline int finish_context_create(long ret, u32 api_id, bool bind)
+{
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct inflight_key key = make_inflight_key(pid_tgid, api_id);
+    struct inflight_val *value = bpf_map_lookup_elem(&ctx_inflight_map, &key);
+    u64 ctx = 0;
+
+    if (!value)
+        return 0;
+    if (ret == 0 && bpf_probe_read_user(&ctx, sizeof(ctx), (void *)value->arg1) == 0 && ctx) {
+        struct ctx_key context = process_ctx_key(pid_tgid, ctx);
+        if (bpf_map_update_elem(&ctx_to_device, &context, &value->device_ordinal, BPF_ANY) != 0)
+            stats_add(EVENT_CTX_CREATE, STAT_MAP_UPDATE_FAILURE);
+        if (bind)
+            bind_context(ctx);
+
+        struct event event = {};
+        init_event(&event, EVENT_CTX_CREATE);
+        event.device_ordinal = value->device_ordinal;
+        event.address = ctx;
+        event.status = (s32)ret;
+        submit_event(&event);
+    }
+    bpf_map_delete_elem(&ctx_inflight_map, &key);
+    return 0;
+}
+
+SEC("uprobe/cuCtxCreate_v2")
+int BPF_KPROBE(trace_cuCtxCreate_v2, void *out, u32 flags, u32 device)
+{
+    return remember_context_output(out, device, EVENT_CTX_CREATE);
+}
 SEC("uretprobe/cuCtxCreate_v2")
 int BPF_KRETPROBE(trace_cuCtxCreate_v2_ret, long ret)
 {
-    u32 tid = (u32)bpf_get_current_pid_tgid();
-
-    struct inflight_val *val = bpf_map_lookup_elem(&inflight_map, &tid);
-    if(!val)
-    {
-        return 0;
-    }
-
-    if(ret == 0)
-    {
-        u64 ctx = 0;
-        u32 dev = (u32)val->start_ts_ns;
-
-        // *pctx now holds the freshly created context handle.
-        if(bpf_probe_read_user(&ctx, sizeof(ctx), (void *)val->arg1) == 0)
-        {
-            bpf_map_update_elem(&ctx_to_device, &ctx, &dev, BPF_ANY);
-        }
-    }
-
-    bpf_map_delete_elem(&inflight_map, &tid);
-
-    return 0;
+    return finish_context_create(ret, EVENT_CTX_CREATE, true);
 }
 
-// 7. Primary context retained (implicit creation path) — entry captures the CUdevice ordinal.
-SEC("uprobe/cuDevicePrimaryCtxRetain")
-int BPF_KPROBE(trace_cuDevicePrimaryCtxRetain, void *pctx, u32 dev)
+SEC("uprobe/cuCtxCreate_v3")
+int BPF_KPROBE(trace_cuCtxCreate_v3, void *out, void *params, int count, u32 flags, u32 device)
 {
-    u32 tid = (u32)bpf_get_current_pid_tgid();
-
-    struct inflight_val val = {};
-    val.arg1        = (u64)pctx;
-    val.start_ts_ns = (u64)dev;
-
-    bpf_map_update_elem(&inflight_map, &tid, &val, BPF_ANY);
-
-    return 0;
+    return remember_context_output(out, device, EVENT_CTX_CREATE);
+}
+SEC("uretprobe/cuCtxCreate_v3")
+int BPF_KRETPROBE(trace_cuCtxCreate_v3_ret, long ret)
+{
+    return finish_context_create(ret, EVENT_CTX_CREATE, true);
 }
 
-// 8. Primary context retained — return, ctx handle is now valid.
-//    We write [ctx -> GPU ID] into ctx_to_device.
+SEC("uprobe/cuCtxCreate_v4")
+int BPF_KPROBE(trace_cuCtxCreate_v4, void *out, void *params, u32 flags, u32 device)
+{
+    return remember_context_output(out, device, EVENT_CTX_CREATE);
+}
+SEC("uretprobe/cuCtxCreate_v4")
+int BPF_KRETPROBE(trace_cuCtxCreate_v4_ret, long ret)
+{
+    return finish_context_create(ret, EVENT_CTX_CREATE, true);
+}
+
+SEC("uprobe/cuDevicePrimaryCtxRetain")
+int BPF_KPROBE(trace_cuDevicePrimaryCtxRetain, void *out, u32 device)
+{
+    return remember_context_output(out, device, EVENT_CTX_CREATE);
+}
 SEC("uretprobe/cuDevicePrimaryCtxRetain")
 int BPF_KRETPROBE(trace_cuDevicePrimaryCtxRetain_ret, long ret)
 {
-    u32 tid = (u32)bpf_get_current_pid_tgid();
-
-    struct inflight_val *val = bpf_map_lookup_elem(&inflight_map, &tid);
-    if(!val)
-    {
-        return 0;
-    }
-
-    if(ret == 0)
-    {
-        u64 ctx = 0;
-        u32 dev = (u32)val->start_ts_ns;
-
-        if(bpf_probe_read_user(&ctx, sizeof(ctx), (void *)val->arg1) == 0)
-        {
-            bpf_map_update_elem(&ctx_to_device, &ctx, &dev, BPF_ANY);
-            bpf_map_update_elem(&tid_to_device, &tid, &dev, BPF_ANY);
-        }
-    }
-
-    bpf_map_delete_elem(&inflight_map, &tid);
-
-    return 0;
+    return finish_context_create(ret, EVENT_CTX_CREATE, false);
 }
 
-// 9. Thread binds to a context (SetCurrent path) — we look up ctx in ctx_to_device
-//    and write [TID -> GPU ID] into tid_to_device.
-/*
-READ Map 1 (ctx_to_device): We look up ctx_B. The map tells us this context belongs to GPU 1.
-
-WRITE Map 2 (tid_to_device): We update Thread 1001's current state. We overwrite the old entry. The map now reads [TID 1001 -> GPU 1].
-1. The Switch Event (cuCtxSetCurrent)To change GPUs, the CPU thread calls cuCtxSetCurrent(new_ctx).Hooks Called:uprobe/cuCtxSetCurrent (or cuCtxSetCurrent_ptsz / cuCtxPushCurrent_v2)Map Operations:Lookup in ctx_to_device: Read new_ctx $\rightarrow$ returns GPU 1.Overwrite in tid_to_device: Update key TID with value GPU 1 using BPF_ANY.State Change:
-*/
 SEC("uprobe/cuCtxSetCurrent")
-int BPF_KPROBE(trace_cuCtxSetCurrent,void *cu_ctx)
+int BPF_KPROBE(trace_cuCtxSetCurrent, void *cu_ctx)
 {
-    u32 tid = bpf_get_current_pid_tgid();
-
-    if(!cu_ctx)
-    {
-
-        return 0;
-    }
-
-    u64 ctx_key = (u64)cu_ctx;
-    u32 *dev = bpf_map_lookup_elem(&ctx_to_device, &ctx_key);
-    if(!dev)
-    {
-        return 0;
-    }
-
-    bpf_map_update_elem(&tid_to_device, &tid, dev, BPF_ANY);
-
+    bind_context((u64)cu_ctx);
     return 0;
 }
 
-// 9. Same as cuCtxSetCurrent but for the POSIX thread-safe (_ptsz) stream variant.
 SEC("uprobe/cuCtxSetCurrent_ptsz")
 int BPF_KPROBE(trace_cuCtxSetCurrent_ptsz, void *cu_ctx)
 {
-    u32 tid = (u32)bpf_get_current_pid_tgid();
-
-    if(!cu_ctx)
-    {
-        return 0;
-    }
-
-    u64 ctx_key = (u64)cu_ctx;
-    u32 *dev = bpf_map_lookup_elem(&ctx_to_device, &ctx_key);
-    if(!dev)
-    {
-        return 0;
-    }
-
-    bpf_map_update_elem(&tid_to_device, &tid, dev, BPF_ANY);
-
+    bind_context((u64)cu_ctx);
     return 0;
 }
 
-// 10. Thread pushes a context onto its private stack (alternative bind path).
-//     We look up ctx in ctx_to_device and write [TID -> GPU ID] into tid_to_device.
 SEC("uprobe/cuCtxPushCurrent_v2")
 int BPF_KPROBE(trace_cuCtxPushCurrent_v2, void *cu_ctx)
 {
-    u32 tid = (u32)bpf_get_current_pid_tgid();
-
-    if(!cu_ctx)
-    {
-        return 0;
-    }
-
-    u64 ctx_key = (u64)cu_ctx;
-    u32 *dev = bpf_map_lookup_elem(&ctx_to_device, &ctx_key);
-    if(!dev)
-    {
-        return 0;
-    }
-
-    bpf_map_update_elem(&tid_to_device, &tid, dev, BPF_ANY);
-
+    bind_context((u64)cu_ctx);
     return 0;
 }
 
-// --- n. all the work happens here (see cuda_actions.bpf.c) ---
-
-// 11. Thread pops the top context off its stack — we remove the TID from tid_to_device.
 SEC("uprobe/cuCtxPopCurrent_v2")
-int BPF_KPROBE(trace_cuCtxPopCurrent_v2, void *pctx)
+int BPF_KPROBE(trace_cuCtxPopCurrent_v2, void *out)
 {
-    u32 tid = (u32)bpf_get_current_pid_tgid();
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct inflight_key key = make_inflight_key(pid_tgid, EVENT_CTX_POP);
+    struct inflight_val value = { .arg1 = (u64)out };
 
-    bpf_map_delete_elem(&tid_to_device, &tid);
-
+    if (bpf_map_update_elem(&ctx_inflight_map, &key, &value, BPF_ANY) != 0)
+        stats_add(EVENT_CTX_POP, STAT_MAP_UPDATE_FAILURE);
     return 0;
 }
 
-// 12. Explicit context destruction — GPU session ends.
-//     We delete the ctx key from ctx_to_device.
+SEC("uretprobe/cuCtxPopCurrent_v2")
+int BPF_KRETPROBE(trace_cuCtxPopCurrent_v2_ret, long ret)
+{
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct inflight_key key = make_inflight_key(pid_tgid, EVENT_CTX_POP);
+    struct inflight_val *value = bpf_map_lookup_elem(&ctx_inflight_map, &key);
+
+    /* The output is the popped context, not the context left current. */
+    if (value && ret == 0) {
+        struct thread_key thread = { .pid_tgid = pid_tgid };
+        bpf_map_delete_elem(&tid_to_device, &thread);
+    }
+    bpf_map_delete_elem(&ctx_inflight_map, &key);
+    return 0;
+}
+
 SEC("uprobe/cuCtxDestroy_v2")
 int BPF_KPROBE(trace_cuCtxDestroy_v2, void *cu_ctx)
 {
-    u64 ctx_key = (u64)cu_ctx;
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct ctx_key key = process_ctx_key(pid_tgid, (u64)cu_ctx);
+    u32 *device = bpf_map_lookup_elem(&ctx_to_device, &key);
 
-    bpf_map_delete_elem(&ctx_to_device, &ctx_key);
-
+    if (device) {
+        struct event event = {};
+        init_event(&event, EVENT_CTX_DESTROY);
+        event.device_ordinal = *device;
+        event.address = (u64)cu_ctx;
+        submit_event(&event);
+    }
+    bpf_map_delete_elem(&ctx_to_device, &key);
     return 0;
 }
 
-// 13. Primary context released — mirror of step 7/8.
-//     We delete the ctx key from ctx_to_device.
+/* CUDA exposes only a device ordinal here. Context entries are bounded by LRU. */
 SEC("uprobe/cuDevicePrimaryCtxRelease_v2")
-int BPF_KPROBE(trace_cuDevicePrimaryCtxRelease_v2, u32 dev)
+int BPF_KPROBE(trace_cuDevicePrimaryCtxRelease_v2, u32 device)
 {
-    // cuDevicePrimaryCtxRelease_v2 only gives us the device ordinal, not the
-    // ctx handle — and ctx_to_device is keyed by ctx, not by device — so we
-    // can't resolve which key to delete from here alone. No-op for now.
-
     return 0;
 }
 

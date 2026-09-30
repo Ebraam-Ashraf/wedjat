@@ -17,15 +17,8 @@
  * or uprobe_opts needed, since the target is a kernel symbol, not a
  * userspace .so.
  *
- * Two probes attach but never show up in the table: do_sys_openat2 and
- * queued_spin_lock_slowpath push nothing to events_pipe by design (no
- * matching event_id exists in common.h yet for "device opened" or "lock
- * contention" — see driver_kprobes.bpf.c). Their attach still gets checked;
- * they're just not part of the tracked/coverage counts below.
- *
- * nvidia_ioctl and uvm_ioctl both report as EVENT_IOCTL — common.h's enum
- * has one ioctl id, not one per driver module, so the table can't tell them
- * apart. Same schema-limitation note as cuda_actions_test.c.
+ * nvidia_ioctl and uvm_ioctl have distinct event IDs so their coverage is
+ * reported separately. NVIDIA probe availability varies by installed driver.
  *
  * usage:  sudo ./driver_kprobes_test [build-dir]    (default: build)
  * env:    DUMP=1   print every matching event as it's polled
@@ -58,10 +51,10 @@
 /* ── event ids this file tracks ───────────────────────────────────────────
  * Change this list only when common.h's event_id enum changes.
  * The coverage check warns if no kernel triggered an id here. */
-static const u32  TRACKED_IDS[]   = { EVENT_MMAP, EVENT_IOCTL,
+static const u32  TRACKED_IDS[]   = { EVENT_MMAP, EVENT_IOCTL, EVENT_UVM_IOCTL,
                                        EVENT_UVM_FAULT, EVENT_UVM_MIGRATE,
                                        EVENT_UVM_EVICT };
-static const char *TRACKED_NAMES[] = { "MMAP", "IOCTL",
+static const char *TRACKED_NAMES[] = { "MMAP", "IOCTL", "UVM_IOCTL",
                                         "UVM_FAULT", "UVM_MIGRATE",
                                         "UVM_EVICT" };
 #define N_TRACKED (int)(sizeof(TRACKED_IDS) / sizeof(TRACKED_IDS[0]))
@@ -79,7 +72,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
     if (sz < sizeof(struct event)) return 0;
 
     struct event *e = data;
-    if (e->pid != (u32)g_target_pid) return 0;
+    if (e->tgid != (u32)g_target_pid) return 0;
 
     for (int i = 0; i < N_TRACKED; i++) {
         if (e->api_id != TRACKED_IDS[i]) continue;
@@ -91,7 +84,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
     if (g_dump)
         printf("    [event] api_id=%-2u dev=%u tid=%u addr=0x%llx bytes=%llu "
                "lat_ns=%llu status=%d\n",
-               e->api_id, e->device_id, e->tid,
+               e->api_id, e->device_ordinal, e->tid,
                (unsigned long long)e->address,
                (unsigned long long)e->bytes,
                (unsigned long long)e->latency_ns,
@@ -182,6 +175,13 @@ int main(int argc, char **argv)
         return FAIL;
     }
     printf("load    ok\n");
+    u32 config_key = 0;
+    struct config_val config = { .flags = CONFIG_F_RAW_CAPTURE };
+    if (bpf_map_update_elem(bpf_map__fd(skel->maps.config_map), &config_key, &config, BPF_ANY) != 0) {
+        printf("FAIL: cannot enable raw test capture\n");
+        driver_kprobes_bpf__destroy(skel);
+        return FAIL;
+    }
 
     /* 3. attach — one line per symbol, missing = skip
      * (uvm_* symbols need nvidia-uvm.ko loaded; a missing symbol just means
@@ -198,14 +198,12 @@ int main(int argc, char **argv)
         bool                ret;
         struct bpf_link   **slot;
     } hooks[] = {
-        H(do_sys_openat2),
         H(nvidia_mmap),                  HR(nvidia_mmap),
         H(nvidia_ioctl),                 HR(nvidia_ioctl),
         H(uvm_ioctl),                    HR(uvm_ioctl),
         H(uvm_va_block_service_fault),   HR(uvm_va_block_service_fault),
         H(uvm_migrate),                  HR(uvm_migrate),
         H(uvm_va_block_evict_pages),     HR(uvm_va_block_evict_pages),
-        H(queued_spin_lock_slowpath),
     };
 #undef H
 #undef HR

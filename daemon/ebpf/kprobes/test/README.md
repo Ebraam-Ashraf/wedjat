@@ -12,6 +12,7 @@ cd daemon/ebpf/kprobes/test
 make                          # build everything → build/
 make test                     # build + run driver_kprobes_test (needs sudo + nvidia.ko)
 make test TARGET=driver_kprobes  # same thing (explicit)
+make test TARGET=proc_lifecycle  # three-worker exit regression (root, no GPU)
 make clean                    # wipe build/
 
 # useful variables
@@ -39,20 +40,18 @@ k2               5      3            0             0           0   ok
 k3              24      4            1             2           1   ok
 ```
 
-Tracked events: `EVENT_IOCTL`, `EVENT_MMAP`, `EVENT_UVM_FAULT`,
-`EVENT_UVM_MIGRATE`, `EVENT_UVM_EVICT`.
+Tracked events: `EVENT_IOCTL`, `EVENT_UVM_IOCTL`, `EVENT_MMAP`,
+`EVENT_UVM_FAULT`, `EVENT_UVM_MIGRATE`, `EVENT_UVM_EVICT`.
 
 Probes and the events they emit:
 
 ```text
 kprobe + kretprobe  nvidia_ioctl               -> EVENT_IOCTL
-kprobe + kretprobe  uvm_ioctl                  -> EVENT_IOCTL
+kprobe + kretprobe  uvm_ioctl                  -> EVENT_UVM_IOCTL
 kprobe + kretprobe  nvidia_mmap                -> EVENT_MMAP
 kprobe + kretprobe  uvm_va_block_service_fault -> EVENT_UVM_FAULT
 kprobe + kretprobe  uvm_migrate                -> EVENT_UVM_MIGRATE
 kprobe + kretprobe  uvm_va_block_evict_pages   -> EVENT_UVM_EVICT
-kprobe              do_sys_openat2             (filter-only, emits nothing)
-kprobe              queued_spin_lock_slowpath  (no-op stub, emits nothing)
 ```
 
 ---
@@ -83,3 +82,7 @@ driver_kprobes.bpf.c    add the SEC("kprobe/new_symbol") probe
 driver_kprobes_test.c   add the EVENT_* id to TRACKED_IDS[] and TRACKED_NAMES[]
                         add new_symbol to hooks[]
 ```
+
+## Process lifecycle regression
+
+The proc_lifecycle_test starts a process with three worker threads, lets those workers exit while the main thread remains alive, and asserts that no process-exit event is emitted yet. It then exits the main thread and requires exactly one process-exit event. This catches an off-by-one signal->live check.

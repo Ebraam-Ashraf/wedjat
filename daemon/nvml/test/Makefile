@@ -35,11 +35,11 @@ $(BUILD)/.d:
 	@mkdir -p $(BUILD)
 	@touch $@
 
-$(BUILD)/poller_test: poller_test.c $(NVML_SRC_DIR)/poller.c | $(BUILD)/.d
-	$(CC) $(CFLAGS) $(NVML_CFLAGS) -o $@ $< $(NVML_LIBS)
+$(BUILD)/poller_test: poller_test.c $(NVML_SRC_DIR)/poller.c $(NVML_SRC_DIR)/poller.h | $(BUILD)/.d
+	$(CC) $(CFLAGS) $(NVML_CFLAGS) -Wl,--wrap=nvmlDeviceGetPowerUsage -o $@ poller_test.c $(NVML_SRC_DIR)/poller.c $(NVML_LIBS)
 
-$(BUILD)/xid_test: xid_test.c $(NVML_SRC_DIR)/xid.c | $(BUILD)/.d
-	$(CC) $(CFLAGS) $(NVML_CFLAGS) -o $@ $< $(NVML_LIBS)
+$(BUILD)/xid_test: xid_test.c $(NVML_SRC_DIR)/xid.c $(NVML_SRC_DIR)/xid.h | $(BUILD)/.d
+	$(CC) $(CFLAGS) $(NVML_CFLAGS) -o $@ xid_test.c $(NVML_SRC_DIR)/xid.c $(NVML_LIBS)
 
 build: $(BUILD)/poller_test $(BUILD)/xid_test
 
@@ -53,8 +53,10 @@ run-poller-test: build build-inputs
 		exit 2; \
 	}
 	@echo "RUN  poller_test PROGRAM=$(PROGRAM)"
-	$(BUILD)/poller_test $(PROGRAM)
-	@echo "PASS poller_test"
+	@$(BUILD)/poller_test $(PROGRAM); rc=$$?; \
+	  if   [ $$rc -eq 0  ]; then echo "PASS poller_test"; \
+	  elif [ $$rc -eq 77 ]; then echo "SKIP poller_test (NVML/device capability unavailable)"; \
+	  else echo "FAIL poller_test (exit $$rc)"; exit 1; fi
 
 run-xid-test: build
 	@echo "RUN  xid_test"

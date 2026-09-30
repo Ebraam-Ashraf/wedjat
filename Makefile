@@ -2,7 +2,11 @@ SHELL := /bin/bash
 
 C_SOURCES := $(shell find daemon -type f \( -name '*.c' -o -name '*.h' \) | sort)
 
-.PHONY: help check check-whitespace format-check docs-check ci kernels kernels-smoke kernels-clean
+GOARCH ?= amd64
+DIST_DIR ?= $(PWD)/dist
+RELEASE_NAME ?= wedjat-linux-$(GOARCH)
+
+.PHONY: help check check-whitespace format-check docs-check ci kernels kernels-smoke kernels-clean bpf dev release install clean
 
 help:
 	@echo "Wedjat development targets"
@@ -44,3 +48,32 @@ kernels-smoke:
 
 kernels-clean:
 	$(MAKE) -C kernels_to_trace clean
+
+bpf:
+	./scripts/build_bpf.sh
+
+dev: bpf
+	@test -f daemon/cmd/wedjatd/main.go || { echo "dev blocked: daemon/cmd/wedjatd/main.go does not exist yet" >&2; exit 2; }
+	@mkdir -p "$(DIST_DIR)"
+	@cd daemon && CGO_ENABLED=1 GOOS=linux GOARCH=$(GOARCH) go build -o "$(DIST_DIR)/wedjatd" ./cmd/wedjatd
+	@echo "==> Running wedjatd in local dev mode..."
+	@sudo "$(DIST_DIR)/wedjatd" --dev
+
+release: bpf
+	@test -f daemon/cmd/wedjatd/main.go || { echo "release blocked: daemon/cmd/wedjatd/main.go does not exist yet" >&2; exit 2; }
+	@mkdir -p "$(DIST_DIR)"
+	@cd daemon && CGO_ENABLED=1 GOOS=linux GOARCH=$(GOARCH) go build -trimpath -ldflags='-s -w' -o "$(DIST_DIR)/wedjatd" ./cmd/wedjatd
+	@if [ -d daemon/cmd/wedjat ]; then cd daemon && CGO_ENABLED=0 GOOS=linux GOARCH=$(GOARCH) go build -trimpath -ldflags='-s -w' -o "$(DIST_DIR)/wedjat" ./cmd/wedjat; fi
+	@install -m 0755 scripts/uninstall.sh "$(DIST_DIR)/wedjat-uninstall"
+	@install -m 0644 scripts/config.yaml "$(DIST_DIR)/config.yaml"
+	@install -m 0644 scripts/wedjatd.service "$(DIST_DIR)/wedjatd.service"
+	@cd "$(DIST_DIR)" && tar -czf "$(RELEASE_NAME).tar.gz" wedjatd wedjat-uninstall config.yaml wedjatd.service $$(test ! -f wedjat || printf '%s' wedjat)
+	@cd "$(DIST_DIR)" && sha256sum "$(RELEASE_NAME).tar.gz" > "$(RELEASE_NAME).tar.gz.sha256"
+	@echo "Created $(DIST_DIR)/$(RELEASE_NAME).tar.gz"
+
+install: release
+	sudo ./scripts/install.sh --local "$(DIST_DIR)"
+
+clean:
+	rm -f dist/wedjat-linux-*.tar.gz dist/wedjat-linux-*.tar.gz.sha256 dist/wedjatd dist/wedjat dist/wedjat-uninstall dist/config.yaml dist/wedjatd.service
+	-rmdir dist 2>/dev/null

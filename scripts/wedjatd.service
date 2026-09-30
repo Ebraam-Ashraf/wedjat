@@ -1,0 +1,25 @@
+[Unit]
+Description=Wedjat GPU Monitoring Daemon
+After=local-fs.target
+ConditionPathIsExecutable=/usr/local/bin/wedjatd
+
+[Service]
+Type=simple
+User=root
+Group=wedjat
+UMask=0027
+RuntimeDirectory=wedjat
+RuntimeDirectoryMode=0770
+StateDirectory=wedjat
+StateDirectoryMode=2750
+ExecStart=/usr/local/bin/wedjatd --config /etc/wedjat/config.yaml
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+LimitMEMLOCK=infinity
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

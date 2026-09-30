@@ -26,13 +26,11 @@ make test LIBCUDA=/path/to/libcuda.so.1   # override libcuda path if needed
 
 ### `cuda_actions_test`
 
-Loads `cuda_actions.bpf.o` and `host_ctx.bpf.o` together — the context
-hooks (`host_ctx`) must run alongside the action hooks so that `tid_to_device`
-and `ctx_to_device` get populated. Without them every `cuda_actions` probe
-returns early (no device mapping) and no events reach the ring buffer.
-
-Both objects share the same `tid_to_device` and `ctx_to_device` maps via
-`bpf_map__reuse_fd()`.
+Loads `cuda_actions.bpf.o` and attaches the CUDA action hooks. Context state is
+validated separately by `host_ctx_test`; production collection loading must
+share common maps between the two objects using map replacements. Without a
+known thread/device mapping, action events carry `WEDJAT_UNKNOWN_DEVICE` and
+remain visible for userspace reconciliation.
 
 For every `k*` binary found in `build/`:
 
@@ -54,6 +52,8 @@ Tracked events: `EVENT_LAUNCH`, `EVENT_ALLOC`, `EVENT_FREE`, `EVENT_MEMCPY`,
 `EVENT_SYNC`.
 
 ### `host_ctx_test`
+
+Runtime API fixtures (`cudaSetDevice`, `cudaMalloc`, and launches) exercise the primary-context retain path; the harness attaches both retain probes and verifies the resulting thread-to-device binding. Retain populates `ctx_to_device` without binding until `cuCtxSetCurrent` is observed.
 
 Loads `host_ctx.bpf.o` and attaches all context lifecycle uprobes once.
 For every `k*` binary:

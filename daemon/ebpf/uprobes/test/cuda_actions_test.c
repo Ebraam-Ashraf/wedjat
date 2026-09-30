@@ -72,7 +72,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
     if (sz < sizeof(struct event)) return 0;
 
     struct event *e = data;
-    if (e->pid != (u32)g_target_pid) return 0;
+    if (e->tgid != (u32)g_target_pid) return 0;
 
     for (int i = 0; i < N_TRACKED; i++) {
         if (e->api_id != TRACKED_IDS[i]) continue;
@@ -84,7 +84,7 @@ static int handle_event(void *ctx, void *data, size_t sz)
     if (g_dump)
         printf("    [event] api_id=%-2u dev=%u tid=%u addr=0x%llx bytes=%llu "
                "lat_ns=%llu status=%d\n",
-               e->api_id, e->device_id, e->tid,
+               e->api_id, e->device_ordinal, e->tid,
                (unsigned long long)e->address,
                (unsigned long long)e->bytes,
                (unsigned long long)e->latency_ns,
@@ -176,6 +176,13 @@ int main(int argc, char **argv)
         return FAIL;
     }
     printf("load    ok\n");
+    u32 config_key = 0;
+    struct config_val config = { .flags = CONFIG_F_RAW_CAPTURE };
+    if (bpf_map_update_elem(bpf_map__fd(skel->maps.config_map), &config_key, &config, BPF_ANY) != 0) {
+        printf("FAIL: cannot enable raw test capture\n");
+        cuda_actions_bpf__destroy(skel);
+        return FAIL;
+    }
 
     /* 3. attach — one line per symbol, missing = skip */
     printf("attach\n");
@@ -192,14 +199,19 @@ int main(int argc, char **argv)
         H(cuLaunchKernel),           H(cuLaunchKernel_ptsz),
         H(cuLaunchCooperativeKernel),H(cuGraphLaunch),
         H(cuMemAlloc_v2),            HR(cuMemAlloc_v2),
-        H(cuMemFree_v2),             H(cuMemAllocManaged),
+        H(cuMemAlloc),               HR(cuMemAlloc),
+        H(cuMemFree_v2),             HR(cuMemFree_v2),
+        H(cuMemFree),                HR(cuMemFree),
+        H(cuMemFreeAsync),           HR(cuMemFreeAsync),
+        H(cuMemAllocManaged),        HR(cuMemAllocManaged),
+        H(cuMemAllocAsync),          HR(cuMemAllocAsync),
         H(cuMemcpyHtoD_v2),          H(cuMemcpyDtoH_v2),  H(cuMemcpyDtoD_v2),
         H(cuMemcpyHtoDAsync_v2),     H(cuMemcpyDtoHAsync_v2), H(cuMemcpyDtoDAsync_v2),
         H(cuMemcpyAsync),
         H(cuCtxSynchronize),         HR(cuCtxSynchronize),
+        H(cuEventSynchronize),       HR(cuEventSynchronize),
         H(cuStreamSynchronize),      HR(cuStreamSynchronize),
         H(cuStreamSynchronize_ptsz), HR(cuStreamSynchronize_ptsz),
-        H(cuModuleGetFunction),
     };
 #undef H
 #undef HR

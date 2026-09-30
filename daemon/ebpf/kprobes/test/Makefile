@@ -62,7 +62,13 @@ $(BUILD)/driver_kprobes.bpf.o: $(BPF_SRC_DIR)/driver_kprobes.bpf.c \
 $(BUILD)/driver_kprobes.skel.h: $(BUILD)/driver_kprobes.bpf.o
 	$(BPFTOOL) gen skeleton $< > $@
 
-build-bpf: $(BUILD)/driver_kprobes.skel.h
+$(BUILD)/proc_lifecycle.bpf.o: ../../proc_lifecycle.bpf.c ../../common.h $(BUILD)/vmlinux.h | $(BUILD)/.d
+	$(BPF_CC) $(BPF_CFLAGS) -c $< -o $@
+
+$(BUILD)/proc_lifecycle.skel.h: $(BUILD)/proc_lifecycle.bpf.o
+	$(BPFTOOL) gen skeleton $< > $@
+
+build-bpf: $(BUILD)/driver_kprobes.skel.h $(BUILD)/proc_lifecycle.skel.h
 
 # ---------------------------------------------------------------------------
 # Test harness compilation
@@ -72,7 +78,10 @@ $(BUILD)/driver_kprobes_test: driver_kprobes_test.c \
     $(BPF_SRC_DIR)/../common.h $(BUILD)/driver_kprobes.skel.h | $(BUILD)/.d
 	$(CC) $(CFLAGS) -I$(BUILD) -I../.. -o $@ $< $(LIBS)
 
-build-tests: $(BUILD)/driver_kprobes_test
+$(BUILD)/proc_lifecycle_test: proc_lifecycle_test.c $(BPF_SRC_DIR)/../common.h $(BUILD)/proc_lifecycle.skel.h | $(BUILD)/.d
+	$(CC) $(CFLAGS) -I$(BUILD) -I../.. -pthread -o $@ $< $(LIBS)
+
+build-tests: $(BUILD)/driver_kprobes_test $(BUILD)/proc_lifecycle_test
 
 # ---------------------------------------------------------------------------
 # CUDA fixture inputs
@@ -99,8 +108,13 @@ check-modules:
 		echo "==> nvidia-uvm.ko already loaded"; \
 	fi
 
+ifeq ($(TARGET),proc_lifecycle)
+test: build-bpf build-tests
+	$(BUILD)/proc_lifecycle_test
+else
 test: all check-modules
 	sudo env DUMP="$(DUMP)" $(BUILD)/$(TARGET)_test $(KERNELS_BUILD)
+endif
 
 # ---------------------------------------------------------------------------
 # Cleanup

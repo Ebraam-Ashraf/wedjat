@@ -18,7 +18,12 @@ typedef __u64 u64;
 typedef __s32 s32;
 #endif
 
-// i think it's easier rather that strings, in Go part will map it
+/* Device ordinals come from the CUDA process, not from NVML. They are relative
+ * to CUDA_VISIBLE_DEVICES and must be resolved to a physical UUID in userspace
+ * before being persisted as a GPU identity. */
+#define WEDJAT_UNKNOWN_DEVICE ((u32)0xffffffffU)
+
+/* Event IDs are a compact wire contract. Keep existing values stable. */
 enum event_id {
     EVENT_CTX_SET        = 1,
     EVENT_CTX_CREATE     = 2,
@@ -34,24 +39,129 @@ enum event_id {
     EVENT_IOCTL          = 12,
     EVENT_MMAP           = 13,
     EVENT_SM_BLOCK_START = 14,
-    EVENT_SM_BLOCK_END   = 15
+    EVENT_SM_BLOCK_END   = 15,
+    EVENT_PROC_EXEC      = 16,
+    EVENT_PROC_EXIT      = 17,
+    EVENT_UVM_IOCTL      = 18,
+    EVENT_CTX_POP        = 19,
+    EVENT_ID_MAX
 };
 
+enum event_flags {
+    EVENT_F_NONE              = 0,
+    EVENT_F_DEVICE_UNKNOWN    = 1U << 0,
+    EVENT_F_FROM_PID_FALLBACK = 1U << 1,
+    EVENT_F_RAW_CAPTURE       = 1U << 2
+};
+
+/*
+ * Host-to-userspace event format, intentionally exactly 64 bytes.
+ *
+ * device_ordinal is never an NVML or physical GPU index. For normal events
+ * start_boottime_ns is zero. For process lifecycle events it identifies the
+ * process even if /proc disappears before the daemon handles the record.
+ */
 struct event {
-    u32 api_id; // from the enum
     u64 ts_ns;
+    u64 start_boottime_ns;
     u64 latency_ns;
-    u32 pid;
-    u32 tid;
-    u32 device_id;
     u64 address;
     u64 bytes;
+    u32 tgid;
+    u32 tid;
+    u32 device_ordinal;
+    u32 api_id;
+    u32 flags;
     s32 status;
+};
+_Static_assert(sizeof(struct event) == 64, "event ABI must remain 64 bytes");
+
+/* A thread ID is globally unique while alive, but pid_tgid makes ownership
+ * explicit and lets userspace remove all state belonging to one process. */
+struct thread_key {
+    u64 pid_tgid;
+};
+
+/* CUDA context pointers are process virtual addresses, not machine-global IDs. */
+struct ctx_key {
+    u32 tgid;
+    u32 pad;
+    u64 ctx;
+};
+
+struct inflight_key {
+    u64 pid_tgid;
+    u32 api_id;
+    u32 pad;
 };
 
 struct inflight_val {
     u64 start_ts_ns;
     u64 arg1;
+    u64 arg2;
+    u32 device_ordinal;
+    u32 flags;
+};
+
+struct alloc_key {
+    u32 tgid;
+    u32 pad;
+    u64 address;
+};
+
+struct alloc_val {
+    u64 bytes;
+    u32 device_ordinal;
+    u32 pad;
+};
+
+struct process_seen_val {
+    u64 start_boottime_ns;
+};
+
+struct agg_key {
+    u32 tgid;
+    u32 device_ordinal;
+    u32 api_id;
+    u32 pad;
+};
+
+/* Values are per CPU. Sum counters, but take the maximum for latency_max_ns. */
+struct agg_val {
+    u64 count;
+    u64 bytes;
+    u64 latency_sum_ns;
+    u64 latency_max_ns;
+    u64 alloc_bytes;
+    u64 free_bytes;
+    u64 errors;
+    u64 uvm_faults;
+    u64 uvm_evicts;
+};
+
+/* One stats slot per event ID, plus slot zero for global counters. */
+struct stats_val {
+    u64 ringbuf_drops;
+    u64 map_update_failures;
+    u64 unknown_device_events;
+    u64 alloc_free_misses;
+};
+
+struct config_val {
+    u32 flags;
+    u32 sync_stall_us;
+};
+
+enum stat_id {
+    STAT_RINGBUF_DROP = 0,
+    STAT_MAP_UPDATE_FAILURE = 1,
+    STAT_UNKNOWN_DEVICE = 2,
+    STAT_ALLOC_FREE_MISS = 3
+};
+
+enum config_flags {
+    CONFIG_F_RAW_CAPTURE         = 1U << 0,
+    CONFIG_F_AGGREGATE_HOT_PATHS = 1U << 1
 };
 
 /* The single mangled CUDA kernel both gpu_sm probes are bound to. Kept here
@@ -60,107 +170,252 @@ struct inflight_val {
  * produces no events; one that does must produce them. */
 #define WEDJAT_TARGET_SYM "_Z16scale_add_kernelPfffi"
 
-
-// record sent from the GPU to userspace, one per thread block at kernel entry and exit
-// ts_ns is the GPU timer, not the host clock
+/* Record sent from the GPU to userspace, one per thread block at kernel entry
+ * and exit. ts_ns is the GPU timer, not the host clock. */
 struct dev_event {
-    u32 api_id;   // EVENT_SM_BLOCK_START or EVENT_SM_BLOCK_END
-    u32 sm_id;    // physical SM (%smid)
+    u32 api_id;
+    u32 sm_id;
     u32 ctaid_x;
     u32 ctaid_y;
     u32 ctaid_z;
     u32 pid;
     u64 ts_ns;
 };
+_Static_assert(sizeof(struct dev_event) == 32, "device event ABI must remain 32 bytes");
 
 #if defined(__bpf__) && !defined(DEVICE_BPF)
+#include <bpf/bpf_core_read.h>
 
-// events map to for userspace to store on db
+/* Rare, important records. Hot paths update agg_map unless raw capture is on. */
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 256 * 1024);
 } events_pipe SEC(".maps");
 
-
-// used by all entry/exit probes to calculate latency
+/* Separate bounded LRU maps prevent cross-probe pairing collisions and let
+ * abandoned calls age out after process death. */
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 8192);
-    __type(key,   u32);                  // tid (Thread ID)
-    __type(value, struct inflight_val);  // start time
-} inflight_map SEC(".maps");
+    __type(key, struct inflight_key);
+    __type(value, struct inflight_val);
+} ctx_inflight_map SEC(".maps");
 
-
-/*
-============== Why 2 maps for device_id? ==============
-
-problem:
-    we wanna know a thread now where is it running now ? on which GPU device_id ?
-    not all apis like cuMemAlloc() can hook from it device_id
-
-why not PID -> device_id?
-    A single cpu process can use multiple GPUs
-
-why not TID -> device_id only?
-    Threads can dynamically switch GPUs
-
-why not CTX -> device_id only?
-    as we know one program can have many processes
-    each process has many ctx objects per GPU
-    and process each has many threads
-    threads can dynamically switch GPUs
-    and we wanna know witch thread on which gpu now
-    +
-    not all apis like cuMemAlloc() has ctx
-
-solution:
-    ctx_to_device (The Setup Map)
-        on initialization calls cuCtxCreate(&ctx, flags, device_id) and save [Context 0xABC -> GPU 1].
-
-    tid_to_device (The Runtime Router Map)
-        When a worker thread binds to a GPU, it calls cuCtxSetCurrent(0xABC).
-        We intercept this, query our ctx_to_device map with 0xABC, and it answers "GPU 1".
-        We then map the current executing thread: [TID -> GPU 1].
-
-
-think with the complex scenario:
-    one program many cpu processes
-    one of them many cpu threads
-    one cpu thread and we have many GPUs
-    theads can be dynamically switch GPUs
-    [A single CPU thread can never be bound to more that one GPU simultaneously and on switch ]
-
-currently is:
-    tid-> device_id just a performance wise
-    better is tid->ctx
-    but for now i dont see any need to know ctx
-    ai says :
-    1. NVIDIA MPS (Multi-Process Service) & Multi-Tenancy
-    2. Memory Leak Tracking
-    latter tbd but for now im fine with the 2 maps solution
-    maybe migrate to
-        one is the tid->{ctx,deviceid}
-        and another ctx->device_id
- */
-
-// key : TID
-// value : device_id
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 8192);
+    __type(key, struct inflight_key);
+    __type(value, struct inflight_val);
+} cuda_inflight_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 8192);
+    __type(key, struct inflight_key);
+    __type(value, struct inflight_val);
+} driver_inflight_map SEC(".maps");
+
+/* Pinned state map: key is pid_tgid, value is a CUDA-visible device ordinal. */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 10240);
-    __type(key,   u32);
+    __type(key, struct thread_key);
     __type(value, u32);
 } tid_to_device SEC(".maps");
 
-// key : ctx
-// value : device_id
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 16384);
+    __type(key, u32);
+    __type(value, u32);
+} pid_to_device SEC(".maps");
+
+/* Pinned state map: a context pointer is scoped by its owning process. */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 4096);
-    __type(key,   u64);
+    __type(key, struct ctx_key);
     __type(value, u32);
 } ctx_to_device SEC(".maps");
 
+/* Pinned state map. It is used for alloc/free counters, never VRAM truth. */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 32768);
+    __type(key, struct alloc_key);
+    __type(value, struct alloc_val);
+} alloc_map SEC(".maps");
+
+/* Per-second hot-path accounting. Batch-drain with lookup-and-delete. */
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_HASH);
+    __uint(max_entries, 8192);
+    __uint(map_flags, BPF_F_NO_PREALLOC);
+    __type(key, struct agg_key);
+    __type(value, struct agg_val);
+} agg_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, EVENT_ID_MAX);
+    __type(key, u32);
+    __type(value, struct stats_val);
+} stats_map SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, struct config_val);
+} config_map SEC(".maps");
+
+/* Tracks only processes that have produced GPU telemetry. */
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 16384);
+    __type(key, u32);
+    __type(value, struct process_seen_val);
+} seen_processes SEC(".maps");
+
+static __always_inline struct inflight_key make_inflight_key(u64 pid_tgid, u32 api_id)
+{
+    struct inflight_key key = { .pid_tgid = pid_tgid, .api_id = api_id };
+    return key;
+}
+
+static __always_inline struct thread_key current_thread_key(void)
+{
+    struct thread_key key = {
+        .pid_tgid = bpf_get_current_pid_tgid(),
+    };
+    return key;
+}
+
+static __always_inline u32 current_device_ordinal(void)
+{
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct thread_key key = { .pid_tgid = pid_tgid };
+    u32 tgid = (u32)(pid_tgid >> 32);
+    u32 *device = bpf_map_lookup_elem(&tid_to_device, &key);
+
+    if (device)
+        return *device;
+    device = bpf_map_lookup_elem(&pid_to_device, &tgid);
+    return device ? *device : WEDJAT_UNKNOWN_DEVICE;
+}
+
+static __always_inline void init_event(struct event *event, u32 api_id)
+{
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+
+    __builtin_memset(event, 0, sizeof(*event));
+    event->ts_ns = bpf_ktime_get_ns();
+    event->tgid = (u32)(pid_tgid >> 32);
+    event->tid = (u32)pid_tgid;
+    event->device_ordinal = current_device_ordinal();
+    event->api_id = api_id;
+    if (event->device_ordinal != WEDJAT_UNKNOWN_DEVICE) {
+        struct thread_key key = { .pid_tgid = pid_tgid };
+        if (!bpf_map_lookup_elem(&tid_to_device, &key))
+            event->flags |= EVENT_F_FROM_PID_FALLBACK;
+    }
+    if (event->device_ordinal == WEDJAT_UNKNOWN_DEVICE)
+        event->flags |= EVENT_F_DEVICE_UNKNOWN;
+}
+
+static __always_inline void stats_add(u32 api_id, enum stat_id stat_id)
+{
+    u32 slot = api_id < EVENT_ID_MAX ? api_id : 0;
+    struct stats_val *stats = bpf_map_lookup_elem(&stats_map, &slot);
+
+    if (!stats)
+        return;
+    if (stat_id == STAT_RINGBUF_DROP)
+        __sync_fetch_and_add(&stats->ringbuf_drops, 1);
+    else if (stat_id == STAT_MAP_UPDATE_FAILURE)
+        __sync_fetch_and_add(&stats->map_update_failures, 1);
+    else if (stat_id == STAT_UNKNOWN_DEVICE)
+        __sync_fetch_and_add(&stats->unknown_device_events, 1);
+    else if (stat_id == STAT_ALLOC_FREE_MISS)
+        __sync_fetch_and_add(&stats->alloc_free_misses, 1);
+}
+
+static __always_inline void mark_gpu_process(u32 tgid)
+{
+    struct task_struct *task;
+    struct process_seen_val value = {};
+
+    if (bpf_map_lookup_elem(&seen_processes, &tgid))
+        return;
+    task = (struct task_struct *)bpf_get_current_task_btf();
+    value.start_boottime_ns = BPF_CORE_READ(task, start_boottime);
+    if (bpf_map_update_elem(&seen_processes, &tgid, &value, BPF_ANY) != 0)
+        stats_add(0, STAT_MAP_UPDATE_FAILURE);
+}
+
+static __always_inline int submit_event(struct event *event)
+{
+    if (event->device_ordinal == WEDJAT_UNKNOWN_DEVICE &&
+        event->api_id != EVENT_PROC_EXEC && event->api_id != EVENT_PROC_EXIT) {
+        event->flags |= EVENT_F_DEVICE_UNKNOWN;
+        stats_add(event->api_id, STAT_UNKNOWN_DEVICE);
+    }
+    mark_gpu_process(event->tgid);
+    if (bpf_ringbuf_output(&events_pipe, event, sizeof(*event), 0) != 0) {
+        stats_add(event->api_id, STAT_RINGBUF_DROP);
+        return 0;
+    }
+    return 1;
+}
+
+static __always_inline int record_aggregate(struct event *event)
+{
+    u32 zero = 0;
+    struct config_val *config = bpf_map_lookup_elem(&config_map, &zero);
+    u32 flags = config ? config->flags : CONFIG_F_AGGREGATE_HOT_PATHS;
+    struct agg_key key = {
+        .tgid = event->tgid,
+        .device_ordinal = event->device_ordinal,
+        .api_id = event->api_id,
+    };
+    struct agg_val initial = {};
+    struct agg_val *value;
+
+    mark_gpu_process(event->tgid);
+    if (flags & CONFIG_F_RAW_CAPTURE) {
+        event->flags |= EVENT_F_RAW_CAPTURE;
+        return submit_event(event);
+    }
+    if (event->device_ordinal == WEDJAT_UNKNOWN_DEVICE)
+        stats_add(event->api_id, STAT_UNKNOWN_DEVICE);
+    if (bpf_map_update_elem(&agg_map, &key, &initial, BPF_NOEXIST) != 0 &&
+        !bpf_map_lookup_elem(&agg_map, &key)) {
+        stats_add(event->api_id, STAT_MAP_UPDATE_FAILURE);
+        return 0;
+    }
+    value = bpf_map_lookup_elem(&agg_map, &key);
+    if (!value) {
+        stats_add(event->api_id, STAT_MAP_UPDATE_FAILURE);
+        return 0;
+    }
+    value->count++;
+    if (event->status == 0)
+        value->bytes += event->bytes;
+    value->latency_sum_ns += event->latency_ns;
+    if (event->latency_ns > value->latency_max_ns)
+        value->latency_max_ns = event->latency_ns;
+    if (event->status != 0)
+        value->errors++;
+    if (event->status == 0 && event->api_id == EVENT_ALLOC)
+        value->alloc_bytes += event->bytes;
+    else if (event->status == 0 && event->api_id == EVENT_FREE)
+        value->free_bytes += event->bytes;
+    else if (event->api_id == EVENT_UVM_FAULT)
+        value->uvm_faults++;
+    else if (event->api_id == EVENT_UVM_EVICT)
+        value->uvm_evicts++;
+    return 1;
+}
 
 #endif // host maps
 

@@ -1,713 +1,218 @@
-#include<vmlinux.h>
-#include<bpf/bpf_helpers.h>
-#include<bpf/bpf_tracing.h>
-#include"../common.h"
+#include <vmlinux.h>
+#include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
+#include "../common.h"
 
-
-// All probes here are // n — no fixed order, any can fire many times in any sequence.
-// This is the work phase: between step 10 (context bound) and step 11 (context popped).
-// Every probe reads [TID -> GPU ID] from tid_to_device, measures duration,
-// and pushes a struct event to userspace. No map writes happen in this file.
-
-/*
-eBPF Hook: uprobe/cuMemAlloc (The Entry Probe)
-
-Map Actions:
-
-READ Map 2 (tid_to_device): We ask the kernel for the current thread ID (1001). We look up TID 1001 in Map 2. Because of the switch, the map instantly answers: "GPU 1".
-
-WRITE Map 3 (inflight_map): We need a stopwatch to measure how long this takes. We write an entry into Map 3: [TID 1001 -> {start_time: 10:00:00.000, device_id: 1, size: 50MB}].
-*/
-// n. GPU memory allocation (v2 API) — entry captures requested size.
-SEC("uprobe/cuMemAlloc_v2")
-int BPF_KPROBE(trace_cuMemAlloc_v2, void *dptr, u64 bytesize)
+static __always_inline int record_cuda(u32 api_id, u64 address, u64 bytes,
+                                       u64 latency_ns, s32 status)
 {
-    u32 tid = (u32)bpf_get_current_pid_tgid();
+    struct event event = {};
+    init_event(&event, api_id);
+    event.address = address;
+    event.bytes = bytes;
+    event.latency_ns = latency_ns;
+    event.status = status;
 
-    // stash the requested size as our stopwatch payload; the size that
-    // actually got allocated only makes sense once status is known below.
-    struct inflight_val val = {};
-    val.start_ts_ns = bpf_ktime_get_ns();
-    val.arg1        = bytesize;
-
-    bpf_map_update_elem(&inflight_map, &tid, &val, BPF_ANY);
-
-    return 0;
-}
-
-// n. GPU memory allocation (v2 API) — return, allocated device pointer is valid.
-SEC("uretprobe/cuMemAlloc_v2")
-int BPF_KRETPROBE(trace_cuMemAlloc_v2_ret, long ret)
-{
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tid = (u32)pid_tgid;
-
-    struct inflight_val *val = bpf_map_lookup_elem(&inflight_map, &tid);
-    if(!val)
-    {
+    if (api_id == EVENT_ALLOC && status != 0) {
+        u32 zero = 0;
+        struct config_val *config = bpf_map_lookup_elem(&config_map, &zero);
+        record_aggregate(&event);
+        if (!config || !(config->flags & CONFIG_F_RAW_CAPTURE))
+            submit_event(&event);
         return 0;
     }
-
-    u32 *dev = bpf_map_lookup_elem(&tid_to_device, &tid);
-
-    struct event *e = bpf_ringbuf_reserve(&events_pipe, sizeof(*e), 0);
-    if(e)
-    {
-        e->api_id     = EVENT_ALLOC;
-        e->ts_ns      = bpf_ktime_get_ns();
-        e->latency_ns = e->ts_ns - val->start_ts_ns;
-        e->pid        = (u32)(pid_tgid >> 32);
-        e->tid        = tid;
-        e->device_id  = dev ? *dev : 0xffffffff;
-        e->address    = 0;
-        e->bytes      = val->arg1;
-        e->status     = (s32)ret;
-
-        bpf_ringbuf_submit(e, 0);
-    }
-
-    bpf_map_delete_elem(&inflight_map, &tid);
-
-    return 0;
+    return record_aggregate(&event);
 }
 
-// n. GPU memory allocation (legacy API) — entry captures requested size.
-SEC("uprobe/cuMemAlloc")
-int BPF_KPROBE(trace_cuMemAlloc, void *dptr, u32 bytesize)
-{
-    u32 tid = (u32)bpf_get_current_pid_tgid();
-
-    struct inflight_val val = {};
-    val.start_ts_ns = bpf_ktime_get_ns();
-    val.arg1        = (u64)bytesize;
-
-    bpf_map_update_elem(&inflight_map, &tid, &val, BPF_ANY);
-
-    return 0;
-}
-
-// n. GPU memory allocation (legacy API) — return, allocated device pointer is valid.
-SEC("uretprobe/cuMemAlloc")
-int BPF_KRETPROBE(trace_cuMemAlloc_ret, long ret)
+static __always_inline int begin_cuda_call(u32 api_id, u64 arg1, u64 arg2)
 {
     u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tid = (u32)pid_tgid;
+    struct inflight_key key = make_inflight_key(pid_tgid, api_id);
+    struct inflight_val value = {
+        .start_ts_ns = bpf_ktime_get_ns(),
+        .arg1 = arg1,
+        .arg2 = arg2,
+        .device_ordinal = current_device_ordinal(),
+    };
 
-    struct inflight_val *val = bpf_map_lookup_elem(&inflight_map, &tid);
-    if(!val)
-    {
-        return 0;
-    }
-
-    u32 *dev = bpf_map_lookup_elem(&tid_to_device, &tid);
-
-    struct event *e = bpf_ringbuf_reserve(&events_pipe, sizeof(*e), 0);
-    if(e)
-    {
-        e->api_id     = EVENT_ALLOC;
-        e->ts_ns      = bpf_ktime_get_ns();
-        e->latency_ns = e->ts_ns - val->start_ts_ns;
-        e->pid        = (u32)(pid_tgid >> 32);
-        e->tid        = tid;
-        e->device_id  = dev ? *dev : 0xffffffff;
-        e->address    = 0;
-        e->bytes      = val->arg1;
-        e->status     = (s32)ret;
-
-        bpf_ringbuf_submit(e, 0);
-    }
-
-    bpf_map_delete_elem(&inflight_map, &tid);
-
+    if (bpf_map_update_elem(&cuda_inflight_map, &key, &value, BPF_ANY) != 0)
+        stats_add(api_id, STAT_MAP_UPDATE_FAILURE);
     return 0;
 }
 
-// n. Unified Memory allocation — GPU and CPU share one virtual address space.
-//    Page faults for this memory are handled by uvm_va_block_service_fault in driver_kprobes.bpf.c.
-SEC("uprobe/cuMemAllocManaged")
-int BPF_KPROBE(trace_cuMemAllocManaged, void *dptr, u64 bytesize, u32 flags)
+static __always_inline int finish_cuda_call(u32 api_id, long ret)
 {
     u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tid = (u32)pid_tgid;
+    struct inflight_key key = make_inflight_key(pid_tgid, api_id);
+    struct inflight_val *value = bpf_map_lookup_elem(&cuda_inflight_map, &key);
+    u64 now = bpf_ktime_get_ns();
+    u64 latency = value ? now - value->start_ts_ns : 0;
+    u64 address = 0;
+    u64 bytes = (api_id == EVENT_ALLOC && value) ? value->arg1 : 0;
+    u32 device = value ? value->device_ordinal : current_device_ordinal();
+    u64 call_arg1 = value ? value->arg1 : 0;
 
-    // no matching uretprobe declared for this one, so we log it straight
-    // from entry — no latency, no confirmed status.
-    u32 *dev = bpf_map_lookup_elem(&tid_to_device, &tid);
-    if(!dev)
-    {
+    if (!value)
         return 0;
+    if (api_id == EVENT_ALLOC && ret == 0) {
+        struct alloc_key alloc_key = {
+            .tgid = (u32)(pid_tgid >> 32),
+            .address = 0,
+        };
+        if (bpf_probe_read_user(&address, sizeof(address), (void *)value->arg2) == 0 && address) {
+            struct alloc_val alloc_value = {
+                .bytes = bytes,
+                .device_ordinal = device,
+            };
+            alloc_key.address = address;
+            if (bpf_map_update_elem(&alloc_map, &alloc_key, &alloc_value, BPF_ANY) != 0)
+                stats_add(EVENT_ALLOC, STAT_MAP_UPDATE_FAILURE);
+        }
+    } else if (api_id == EVENT_FREE && ret == 0) {
+        struct alloc_key alloc_key = {
+            .tgid = (u32)(pid_tgid >> 32),
+            .address = call_arg1,
+        };
+        struct alloc_val *alloc_value = bpf_map_lookup_elem(&alloc_map, &alloc_key);
+        if (alloc_value) {
+            bytes = alloc_value->bytes;
+            device = alloc_value->device_ordinal;
+            bpf_map_delete_elem(&alloc_map, &alloc_key);
+        } else {
+            stats_add(EVENT_FREE, STAT_ALLOC_FREE_MISS);
+        }
+        address = call_arg1;
     }
+    bpf_map_delete_elem(&cuda_inflight_map, &key);
 
-    struct event *e = bpf_ringbuf_reserve(&events_pipe, sizeof(*e), 0);
-    if(e)
-    {
-        e->api_id     = EVENT_ALLOC;
-        e->ts_ns      = bpf_ktime_get_ns();
-        e->latency_ns = 0;
-        e->pid        = (u32)(pid_tgid >> 32);
-        e->tid        = tid;
-        e->device_id  = *dev;
-        e->address    = 0;
-        e->bytes      = bytesize;
-        e->status     = 0;
+    if (api_id == EVENT_ALLOC && ret != 0)
+        return record_cuda(api_id, 0, bytes, latency, (s32)ret);
+    if (api_id == EVENT_FREE && ret != 0)
+        return record_cuda(api_id, call_arg1, 0, latency, (s32)ret);
 
-        bpf_ringbuf_submit(e, 0);
+    struct event event = {};
+    init_event(&event, api_id);
+    event.device_ordinal = device;
+    event.address = address;
+    event.bytes = bytes;
+    event.latency_ns = latency;
+    event.status = (s32)ret;
+    if (api_id == EVENT_SYNC) {
+        u32 zero = 0;
+        struct config_val *config = bpf_map_lookup_elem(&config_map, &zero);
+        if (config && config->sync_stall_us &&
+            latency >= (u64)config->sync_stall_us * 1000 &&
+            !(config->flags & CONFIG_F_RAW_CAPTURE))
+            submit_event(&event);
     }
-
-    return 0;
+    return record_aggregate(&event);
 }
 
-// n. Synchronous host-to-device copy (CPU RAM -> GPU VRAM). Blocks until done.
+static __always_inline int record_cuda_now(u32 api_id, u64 address, u64 bytes)
+{
+    return record_cuda(api_id, address, bytes, 0, 0);
+}
+
+#define ALLOC_PROBES(name, symbol, size_type) \
+SEC("uprobe/" symbol) \
+int BPF_KPROBE(trace_##name, void *out, size_type bytes) \
+{ return begin_cuda_call(EVENT_ALLOC, bytes, (u64)out); } \
+SEC("uretprobe/" symbol) \
+int BPF_KRETPROBE(trace_##name##_ret, long ret) \
+{ return finish_cuda_call(EVENT_ALLOC, ret); }
+
+ALLOC_PROBES(cuMemAlloc_v2, "cuMemAlloc_v2", u64)
+ALLOC_PROBES(cuMemAlloc, "cuMemAlloc", u32)
+ALLOC_PROBES(cuMemAllocManaged, "cuMemAllocManaged", u64)
+ALLOC_PROBES(cuMemAllocAsync, "cuMemAllocAsync", u64)
+#undef ALLOC_PROBES
+
+SEC("uprobe/cuMemFree_v2")
+int BPF_KPROBE(trace_cuMemFree_v2, u64 ptr)
+{
+    return begin_cuda_call(EVENT_FREE, ptr, 0);
+}
+SEC("uretprobe/cuMemFree_v2")
+int BPF_KRETPROBE(trace_cuMemFree_v2_ret, long ret)
+{
+    return finish_cuda_call(EVENT_FREE, ret);
+}
+SEC("uprobe/cuMemFree")
+int BPF_KPROBE(trace_cuMemFree, u64 ptr)
+{
+    return begin_cuda_call(EVENT_FREE, ptr, 0);
+}
+SEC("uretprobe/cuMemFree")
+int BPF_KRETPROBE(trace_cuMemFree_ret, long ret)
+{
+    return finish_cuda_call(EVENT_FREE, ret);
+}
+SEC("uprobe/cuMemFreeAsync")
+int BPF_KPROBE(trace_cuMemFreeAsync, u64 ptr, void *stream)
+{
+    return begin_cuda_call(EVENT_FREE, ptr, 0);
+}
+SEC("uretprobe/cuMemFreeAsync")
+int BPF_KRETPROBE(trace_cuMemFreeAsync_ret, long ret)
+{
+    return finish_cuda_call(EVENT_FREE, ret);
+}
+
 SEC("uprobe/cuMemcpyHtoD_v2")
-int BPF_KPROBE(trace_cuMemcpyHtoD_v2, u64 dstDevice, void *srcHost, u64 ByteCount)
-{
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tid = (u32)pid_tgid;
-
-    u32 *dev = bpf_map_lookup_elem(&tid_to_device, &tid);
-    if(!dev)
-    {
-        return 0;
-    }
-
-    struct event *e = bpf_ringbuf_reserve(&events_pipe, sizeof(*e), 0);
-    if(e)
-    {
-        e->api_id     = EVENT_MEMCPY;
-        e->ts_ns      = bpf_ktime_get_ns();
-        e->latency_ns = 0;
-        e->pid        = (u32)(pid_tgid >> 32);
-        e->tid        = tid;
-        e->device_id  = *dev;
-        e->address    = dstDevice;
-        e->bytes      = ByteCount;
-        e->status     = 0;
-
-        bpf_ringbuf_submit(e, 0);
-    }
-
-    return 0;
-}
-
-// n. Synchronous device-to-host copy (GPU VRAM -> CPU RAM). Blocks until done.
+int BPF_KPROBE(trace_cuMemcpyHtoD_v2, u64 dst, void *src, u64 bytes)
+{ return record_cuda_now(EVENT_MEMCPY, dst, bytes); }
 SEC("uprobe/cuMemcpyDtoH_v2")
-int BPF_KPROBE(trace_cuMemcpyDtoH_v2, void *dstHost, u64 srcDevice, u64 ByteCount)
-{
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tid = (u32)pid_tgid;
-
-    u32 *dev = bpf_map_lookup_elem(&tid_to_device, &tid);
-    if(!dev)
-    {
-        return 0;
-    }
-
-    struct event *e = bpf_ringbuf_reserve(&events_pipe, sizeof(*e), 0);
-    if(e)
-    {
-        e->api_id     = EVENT_MEMCPY;
-        e->ts_ns      = bpf_ktime_get_ns();
-        e->latency_ns = 0;
-        e->pid        = (u32)(pid_tgid >> 32);
-        e->tid        = tid;
-        e->device_id  = *dev;
-        e->address    = srcDevice;
-        e->bytes      = ByteCount;
-        e->status     = 0;
-
-        bpf_ringbuf_submit(e, 0);
-    }
-
-    return 0;
-}
-
-// n. Synchronous device-to-device copy (GPU VRAM -> GPU VRAM). Blocks until done.
+int BPF_KPROBE(trace_cuMemcpyDtoH_v2, void *dst, u64 src, u64 bytes)
+{ return record_cuda_now(EVENT_MEMCPY, src, bytes); }
 SEC("uprobe/cuMemcpyDtoD_v2")
-int BPF_KPROBE(trace_cuMemcpyDtoD_v2, u64 dstDevice, u64 srcDevice, u64 ByteCount)
-{
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tid = (u32)pid_tgid;
-
-    u32 *dev = bpf_map_lookup_elem(&tid_to_device, &tid);
-    if(!dev)
-    {
-        return 0;
-    }
-
-    struct event *e = bpf_ringbuf_reserve(&events_pipe, sizeof(*e), 0);
-    if(e)
-    {
-        e->api_id     = EVENT_MEMCPY;
-        e->ts_ns      = bpf_ktime_get_ns();
-        e->latency_ns = 0;
-        e->pid        = (u32)(pid_tgid >> 32);
-        e->tid        = tid;
-        e->device_id  = *dev;
-        e->address    = dstDevice;
-        e->bytes      = ByteCount;
-        e->status     = 0;
-
-        bpf_ringbuf_submit(e, 0);
-    }
-
-    return 0;
-}
-
-// n. Async host-to-device copy — returns immediately, GPU copies in the background.
+int BPF_KPROBE(trace_cuMemcpyDtoD_v2, u64 dst, u64 src, u64 bytes)
+{ return record_cuda_now(EVENT_MEMCPY, dst, bytes); }
 SEC("uprobe/cuMemcpyHtoDAsync_v2")
-int BPF_KPROBE(trace_cuMemcpyHtoDAsync_v2, u64 dstDevice, void *srcHost, u64 ByteCount)
-{
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tid = (u32)pid_tgid;
-
-    u32 *dev = bpf_map_lookup_elem(&tid_to_device, &tid);
-    if(!dev)
-    {
-        return 0;
-    }
-
-    // hStream is the 4th arg — left unread here, struct event has no field for it.
-    struct event *e = bpf_ringbuf_reserve(&events_pipe, sizeof(*e), 0);
-    if(e)
-    {
-        e->api_id     = EVENT_MEMCPY;
-        e->ts_ns      = bpf_ktime_get_ns();
-        e->latency_ns = 0;
-        e->pid        = (u32)(pid_tgid >> 32);
-        e->tid        = tid;
-        e->device_id  = *dev;
-        e->address    = dstDevice;
-        e->bytes      = ByteCount;
-        e->status     = 0;
-
-        bpf_ringbuf_submit(e, 0);
-    }
-
-    return 0;
-}
-
-// n. Async device-to-host copy — returns immediately, GPU copies in the background.
+int BPF_KPROBE(trace_cuMemcpyHtoDAsync_v2, u64 dst, void *src, u64 bytes, void *stream)
+{ return record_cuda_now(EVENT_MEMCPY, dst, bytes); }
 SEC("uprobe/cuMemcpyDtoHAsync_v2")
-int BPF_KPROBE(trace_cuMemcpyDtoHAsync_v2, void *dstHost, u64 srcDevice, u64 ByteCount)
-{
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tid = (u32)pid_tgid;
-
-    u32 *dev = bpf_map_lookup_elem(&tid_to_device, &tid);
-    if(!dev)
-    {
-        return 0;
-    }
-
-    struct event *e = bpf_ringbuf_reserve(&events_pipe, sizeof(*e), 0);
-    if(e)
-    {
-        e->api_id     = EVENT_MEMCPY;
-        e->ts_ns      = bpf_ktime_get_ns();
-        e->latency_ns = 0;
-        e->pid        = (u32)(pid_tgid >> 32);
-        e->tid        = tid;
-        e->device_id  = *dev;
-        e->address    = srcDevice;
-        e->bytes      = ByteCount;
-        e->status     = 0;
-
-        bpf_ringbuf_submit(e, 0);
-    }
-
-    return 0;
-}
-
-// n. Async device-to-device copy — returns immediately, GPU copies in the background.
+int BPF_KPROBE(trace_cuMemcpyDtoHAsync_v2, void *dst, u64 src, u64 bytes, void *stream)
+{ return record_cuda_now(EVENT_MEMCPY, src, bytes); }
 SEC("uprobe/cuMemcpyDtoDAsync_v2")
-int BPF_KPROBE(trace_cuMemcpyDtoDAsync_v2, u64 dstDevice, u64 srcDevice, u64 ByteCount)
-{
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tid = (u32)pid_tgid;
-
-    u32 *dev = bpf_map_lookup_elem(&tid_to_device, &tid);
-    if(!dev)
-    {
-        return 0;
-    }
-
-    struct event *e = bpf_ringbuf_reserve(&events_pipe, sizeof(*e), 0);
-    if(e)
-    {
-        e->api_id     = EVENT_MEMCPY;
-        e->ts_ns      = bpf_ktime_get_ns();
-        e->latency_ns = 0;
-        e->pid        = (u32)(pid_tgid >> 32);
-        e->tid        = tid;
-        e->device_id  = *dev;
-        e->address    = dstDevice;
-        e->bytes      = ByteCount;
-        e->status     = 0;
-
-        bpf_ringbuf_submit(e, 0);
-    }
-
-    return 0;
-}
-
-// n. Async memory copy — direction (HtoD / DtoH / DtoD) inferred at runtime from pointer attributes.
+int BPF_KPROBE(trace_cuMemcpyDtoDAsync_v2, u64 dst, u64 src, u64 bytes, void *stream)
+{ return record_cuda_now(EVENT_MEMCPY, dst, bytes); }
 SEC("uprobe/cuMemcpyAsync")
-int BPF_KPROBE(trace_cuMemcpyAsync, u64 dst, u64 src, u64 ByteCount)
-{
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tid = (u32)pid_tgid;
+int BPF_KPROBE(trace_cuMemcpyAsync, u64 dst, u64 src, u64 bytes, u32 kind, void *stream)
+{ return record_cuda_now(EVENT_MEMCPY, dst, bytes); }
 
-    u32 *dev = bpf_map_lookup_elem(&tid_to_device, &tid);
-    if(!dev)
-    {
-        return 0;
-    }
+#define LAUNCH_PROBE(name, symbol, fn_arg) \
+SEC("uprobe/" symbol) \
+int BPF_KPROBE(trace_##name, void *fn_arg) \
+{ return record_cuda_now(EVENT_LAUNCH, (u64)fn_arg, 0); }
 
-    struct event *e = bpf_ringbuf_reserve(&events_pipe, sizeof(*e), 0);
-    if(e)
-    {
-        e->api_id     = EVENT_MEMCPY;
-        e->ts_ns      = bpf_ktime_get_ns();
-        e->latency_ns = 0;
-        e->pid        = (u32)(pid_tgid >> 32);
-        e->tid        = tid;
-        e->device_id  = *dev;
-        e->address    = dst;
-        e->bytes      = ByteCount;
-        e->status     = 0;
+LAUNCH_PROBE(cuLaunchKernel, "cuLaunchKernel", fn)
+LAUNCH_PROBE(cuLaunchKernel_ptsz, "cuLaunchKernel_ptsz", fn)
+LAUNCH_PROBE(cuLaunchCooperativeKernel, "cuLaunchCooperativeKernel", fn)
+LAUNCH_PROBE(cuGraphLaunch, "cuGraphLaunch", graph)
+#undef LAUNCH_PROBE
 
-        bpf_ringbuf_submit(e, 0);
-    }
+#define SYNC_PROBES(name, symbol) \
+SEC("uprobe/" symbol) \
+int BPF_KPROBE(trace_##name, void *stream) \
+{ return begin_cuda_call(EVENT_SYNC, (u64)stream, 0); } \
+SEC("uretprobe/" symbol) \
+int BPF_KRETPROBE(trace_##name##_ret, long ret) \
+{ return finish_cuda_call(EVENT_SYNC, ret); }
 
-    return 0;
-}
+SYNC_PROBES(cuStreamSynchronize, "cuStreamSynchronize")
+SYNC_PROBES(cuStreamSynchronize_ptsz, "cuStreamSynchronize_ptsz")
+SYNC_PROBES(cuEventSynchronize, "cuEventSynchronize")
+#undef SYNC_PROBES
 
-// n. Resolves a kernel name to a function handle from a loaded module.
-//    Called before launch to get the function pointer.
-SEC("uprobe/cuModuleGetFunction")
-int BPF_KPROBE(trace_cuModuleGetFunction, void *hfunc, void *hmod, const char *name)
-{
-    // Just a lookup, not GPU work — common.h's event enum has no id for this,
-    // so nothing is pushed to events_pipe here. Kept as a hook point in case
-    // it's ever needed (e.g. to resolve kernel names for cuLaunchKernel events).
-
-    return 0;
-}
-
-// n. Kernel launch — thread commands the GPU to execute a function.
-SEC("uprobe/cuLaunchKernel")
-int BPF_KPROBE(trace_cuLaunchKernel, void *f, u32 gridDimX, u32 gridDimY, u32 gridDimZ, u32 blockDimX, u32 blockDimY)
-{
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tid = (u32)pid_tgid;
-
-    u32 *dev = bpf_map_lookup_elem(&tid_to_device, &tid);
-    if(!dev)
-    {
-        return 0;
-    }
-
-    // blockDimZ, sharedMemBytes, hStream, kernelParams and extra sit past the
-    // 6th register-passed argument on x86_64 (stack-spilled), so they're left
-    // out here to keep this a plain register read for v1.
-    struct event *e = bpf_ringbuf_reserve(&events_pipe, sizeof(*e), 0);
-    if(e)
-    {
-        e->api_id     = EVENT_LAUNCH;
-        e->ts_ns      = bpf_ktime_get_ns();
-        e->latency_ns = 0;
-        e->pid        = (u32)(pid_tgid >> 32);
-        e->tid        = tid;
-        e->device_id  = *dev;
-        e->address    = (u64)f;
-        e->bytes      = 0;
-        e->status     = 0;
-
-        bpf_ringbuf_submit(e, 0);
-    }
-
-    return 0;
-}
-
-// n. Same as cuLaunchKernel but for the POSIX thread-safe (_ptsz) stream variant.
-SEC("uprobe/cuLaunchKernel_ptsz")
-int BPF_KPROBE(trace_cuLaunchKernel_ptsz, void *f, u32 gridDimX, u32 gridDimY, u32 gridDimZ, u32 blockDimX, u32 blockDimY)
-{
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tid = (u32)pid_tgid;
-
-    u32 *dev = bpf_map_lookup_elem(&tid_to_device, &tid);
-    if(!dev)
-    {
-        return 0;
-    }
-
-    struct event *e = bpf_ringbuf_reserve(&events_pipe, sizeof(*e), 0);
-    if(e)
-    {
-        e->api_id     = EVENT_LAUNCH;
-        e->ts_ns      = bpf_ktime_get_ns();
-        e->latency_ns = 0;
-        e->pid        = (u32)(pid_tgid >> 32);
-        e->tid        = tid;
-        e->device_id  = *dev;
-        e->address    = (u64)f;
-        e->bytes      = 0;
-        e->status     = 0;
-
-        bpf_ringbuf_submit(e, 0);
-    }
-
-    return 0;
-}
-
-// n. Cooperative kernel launch — all thread blocks can synchronize across the whole GPU.
-SEC("uprobe/cuLaunchCooperativeKernel")
-int BPF_KPROBE(trace_cuLaunchCooperativeKernel, void *f, u32 gridDimX, u32 gridDimY, u32 gridDimZ, u32 blockDimX, u32 blockDimY)
-{
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tid = (u32)pid_tgid;
-
-    u32 *dev = bpf_map_lookup_elem(&tid_to_device, &tid);
-    if(!dev)
-    {
-        return 0;
-    }
-
-    struct event *e = bpf_ringbuf_reserve(&events_pipe, sizeof(*e), 0);
-    if(e)
-    {
-        e->api_id     = EVENT_LAUNCH;
-        e->ts_ns      = bpf_ktime_get_ns();
-        e->latency_ns = 0;
-        e->pid        = (u32)(pid_tgid >> 32);
-        e->tid        = tid;
-        e->device_id  = *dev;
-        e->address    = (u64)f;
-        e->bytes      = 0;
-        e->status     = 0;
-
-        bpf_ringbuf_submit(e, 0);
-    }
-
-    return 0;
-}
-
-// n. CUDA Graph launch — replays a pre-recorded sequence of GPU ops as one atomic unit.
-SEC("uprobe/cuGraphLaunch")
-int BPF_KPROBE(trace_cuGraphLaunch, void *hGraphExec, void *hStream)
-{
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tid = (u32)pid_tgid;
-
-    u32 *dev = bpf_map_lookup_elem(&tid_to_device, &tid);
-    if(!dev)
-    {
-        return 0;
-    }
-
-    struct event *e = bpf_ringbuf_reserve(&events_pipe, sizeof(*e), 0);
-    if(e)
-    {
-        e->api_id     = EVENT_LAUNCH;
-        e->ts_ns      = bpf_ktime_get_ns();
-        e->latency_ns = 0;
-        e->pid        = (u32)(pid_tgid >> 32);
-        e->tid        = tid;
-        e->device_id  = *dev;
-        e->address    = (u64)hGraphExec;
-        e->bytes      = 0;
-        e->status     = 0;
-
-        bpf_ringbuf_submit(e, 0);
-    }
-
-    return 0;
-}
-
-// n. CPU blocks until all work on a specific stream finishes — entry records start time.
-SEC("uprobe/cuStreamSynchronize")
-int BPF_KPROBE(trace_cuStreamSynchronize, void *hStream)
-{
-    u32 tid = (u32)bpf_get_current_pid_tgid();
-
-    struct inflight_val val = {};
-    val.start_ts_ns = bpf_ktime_get_ns();
-    val.arg1        = (u64)hStream;
-
-    bpf_map_update_elem(&inflight_map, &tid, &val, BPF_ANY);
-
-    return 0;
-}
-
-// n. Stream sync finished — return, pair with entry to measure total GPU wait time.
-SEC("uretprobe/cuStreamSynchronize")
-int BPF_KRETPROBE(trace_cuStreamSynchronize_ret, long ret)
-{
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tid = (u32)pid_tgid;
-
-    struct inflight_val *val = bpf_map_lookup_elem(&inflight_map, &tid);
-    if(!val)
-    {
-        return 0;
-    }
-
-    u32 *dev = bpf_map_lookup_elem(&tid_to_device, &tid);
-
-    struct event *e = bpf_ringbuf_reserve(&events_pipe, sizeof(*e), 0);
-    if(e)
-    {
-        e->api_id     = EVENT_SYNC;
-        e->ts_ns      = bpf_ktime_get_ns();
-        e->latency_ns = e->ts_ns - val->start_ts_ns;
-        e->pid        = (u32)(pid_tgid >> 32);
-        e->tid        = tid;
-        e->device_id  = dev ? *dev : 0xffffffff;
-        e->address    = val->arg1;
-        e->bytes      = 0;
-        e->status     = (s32)ret;
-
-        bpf_ringbuf_submit(e, 0);
-    }
-
-    bpf_map_delete_elem(&inflight_map, &tid);
-
-    return 0;
-}
-
-// n. Same as cuStreamSynchronize but for the POSIX thread-safe (_ptsz) stream variant — entry.
-SEC("uprobe/cuStreamSynchronize_ptsz")
-int BPF_KPROBE(trace_cuStreamSynchronize_ptsz, void *hStream)
-{
-    u32 tid = (u32)bpf_get_current_pid_tgid();
-
-    struct inflight_val val = {};
-    val.start_ts_ns = bpf_ktime_get_ns();
-    val.arg1        = (u64)hStream;
-
-    bpf_map_update_elem(&inflight_map, &tid, &val, BPF_ANY);
-
-    return 0;
-}
-
-// n. Stream sync (_ptsz) finished — return, pair with entry for duration.
-SEC("uretprobe/cuStreamSynchronize_ptsz")
-int BPF_KRETPROBE(trace_cuStreamSynchronize_ptsz_ret, long ret)
-{
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tid = (u32)pid_tgid;
-
-    struct inflight_val *val = bpf_map_lookup_elem(&inflight_map, &tid);
-    if(!val)
-    {
-        return 0;
-    }
-
-    u32 *dev = bpf_map_lookup_elem(&tid_to_device, &tid);
-
-    struct event *e = bpf_ringbuf_reserve(&events_pipe, sizeof(*e), 0);
-    if(e)
-    {
-        e->api_id     = EVENT_SYNC;
-        e->ts_ns      = bpf_ktime_get_ns();
-        e->latency_ns = e->ts_ns - val->start_ts_ns;
-        e->pid        = (u32)(pid_tgid >> 32);
-        e->tid        = tid;
-        e->device_id  = dev ? *dev : 0xffffffff;
-        e->address    = val->arg1;
-        e->bytes      = 0;
-        e->status     = (s32)ret;
-
-        bpf_ringbuf_submit(e, 0);
-    }
-
-    bpf_map_delete_elem(&inflight_map, &tid);
-
-    return 0;
-}
-
-// n. CPU blocks until ALL work on ALL streams for the current context finishes — entry.
 SEC("uprobe/cuCtxSynchronize")
 int BPF_KPROBE(trace_cuCtxSynchronize)
 {
-    u32 tid = (u32)bpf_get_current_pid_tgid();
-
-    struct inflight_val val = {};
-    val.start_ts_ns = bpf_ktime_get_ns();
-    val.arg1        = 0;
-
-    bpf_map_update_elem(&inflight_map, &tid, &val, BPF_ANY);
-
-    return 0;
+    return begin_cuda_call(EVENT_SYNC, 0, 0);
 }
-
-// n. Full-context sync finished — return, pair with entry to measure total wait time.
 SEC("uretprobe/cuCtxSynchronize")
 int BPF_KRETPROBE(trace_cuCtxSynchronize_ret, long ret)
 {
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tid = (u32)pid_tgid;
-
-    struct inflight_val *val = bpf_map_lookup_elem(&inflight_map, &tid);
-    if(!val)
-    {
-        return 0;
-    }
-
-    u32 *dev = bpf_map_lookup_elem(&tid_to_device, &tid);
-
-    struct event *e = bpf_ringbuf_reserve(&events_pipe, sizeof(*e), 0);
-    if(e)
-    {
-        e->api_id     = EVENT_SYNC;
-        e->ts_ns      = bpf_ktime_get_ns();
-        e->latency_ns = e->ts_ns - val->start_ts_ns;
-        e->pid        = (u32)(pid_tgid >> 32);
-        e->tid        = tid;
-        e->device_id  = dev ? *dev : 0xffffffff;
-        e->address    = 0;
-        e->bytes      = 0;
-        e->status     = (s32)ret;
-
-        bpf_ringbuf_submit(e, 0);
-    }
-
-    bpf_map_delete_elem(&inflight_map, &tid);
-
-    return 0;
-}
-
-// n. GPU memory free — the device pointer being released is the argument.
-SEC("uprobe/cuMemFree_v2")
-int BPF_KPROBE(trace_cuMemFree_v2, u64 dptr)
-{
-    u64 pid_tgid = bpf_get_current_pid_tgid();
-    u32 tid = (u32)pid_tgid;
-
-    u32 *dev = bpf_map_lookup_elem(&tid_to_device, &tid);
-    if(!dev)
-    {
-        return 0;
-    }
-
-    struct event *e = bpf_ringbuf_reserve(&events_pipe, sizeof(*e), 0);
-    if(e)
-    {
-        e->api_id     = EVENT_FREE;
-        e->ts_ns      = bpf_ktime_get_ns();
-        e->latency_ns = 0;
-        e->pid        = (u32)(pid_tgid >> 32);
-        e->tid        = tid;
-        e->device_id  = *dev;
-        e->address    = dptr;
-        e->bytes      = 0;
-        e->status     = 0;
-
-        bpf_ringbuf_submit(e, 0);
-    }
-
-    return 0;
+    return finish_cuda_call(EVENT_SYNC, ret);
 }
 
 char LICENSE[] SEC("license") = "GPL";

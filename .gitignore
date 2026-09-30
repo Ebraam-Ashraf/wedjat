@@ -1,5 +1,6 @@
 # Build outputs
 build/
+dist/
 **/build/
 
 # Compiled BPF objects and skeletons

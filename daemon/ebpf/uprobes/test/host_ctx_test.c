@@ -132,11 +132,13 @@ int main(int argc, char **argv)
         bool                ret;
         struct bpf_link   **slot;
     } hooks[] = {
-        H(cuCtxSetCurrent),
         H(cuDevicePrimaryCtxRetain),  HR(cuDevicePrimaryCtxRetain),
+        H(cuCtxSetCurrent),
         H(cuCtxCreate_v2),            HR(cuCtxCreate_v2),
+        H(cuCtxCreate_v3),            HR(cuCtxCreate_v3),
+        H(cuCtxCreate_v4),            HR(cuCtxCreate_v4),
         H(cuCtxPushCurrent_v2),
-        H(cuCtxPopCurrent_v2),
+        H(cuCtxPopCurrent_v2),        HR(cuCtxPopCurrent_v2),
         H(cuCtxDestroy_v2),
         H(cuDevicePrimaryCtxRelease_v2),
     };
@@ -197,7 +199,7 @@ int main(int argc, char **argv)
         /* Poll tid_to_device while the process is running.
          * The BPF program removes the TID when the context is destroyed on exit,
          * so we must catch it while it's still alive. */
-        u32 tid = (u32)pid;
+        struct thread_key tid = { .pid_tgid = ((u64)(u32)pid << 32) | (u32)pid };
         u32 dev = 0xffffffff;
         int found = 0;
 

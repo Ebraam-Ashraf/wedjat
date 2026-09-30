@@ -1,0 +1,12 @@
+storage:
+  path: /var/lib/wedjat
+  lock_path: /run/wedjat/daemon.lock
+  reset_on_boot: true
+  max_size_bytes: 524288000
+  min_free_bytes: 1073741824
+
+retention:
+  day_files_days: 30
+  processes_days: 90
+  incidents_days: 90
+  max_dumps: 20

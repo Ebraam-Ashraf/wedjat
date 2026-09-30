@@ -1,0 +1,46 @@
+name: Release Pipeline
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libbpf-dev linux-headers-generic linux-tools-common linux-tools-generic pkg-config
+          
+      - name: Install BPFTool
+        run: |
+          sudo apt-get install -y linux-tools-$(uname -r) || echo "Kernel specific tools not found, using generic"
+          # Ensure bpftool is accessible
+          if ! command -v bpftool &> /dev/null; then
+            sudo apt-get install -y bpftool
+          fi
+
+      - name: Install NVIDIA Stub
+        run: |
+          sudo apt-get install -y nvidia-cuda-toolkit
+          
+      - name: Build Release Artifacts
+        run: |
+          make release
+          
+      - name: Upload Release to GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/wedjat-linux-amd64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
