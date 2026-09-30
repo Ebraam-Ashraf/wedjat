@@ -178,23 +178,22 @@ test: all
 #   make repeat REPEAT=50
 #   make repeat DUMP=1       # keep the per-event dump
 #
-# Each run's own output is kept in run-N.log. bpftime's log is a rotating file
-# under $(BUILD), so it accumulates across runs rather than being overwritten --
-# grep it for the evidence lines:
+# Per-run output is suppressed; the last run remains in test.log and bpftime
+# diagnostics accumulate in bpftime.log. Grep it for the evidence lines:
 #   grep -E 'ptpass|Copying map fd|Attach successfully' $(BUILD)/bpftime.log
 REPEAT ?= 20
 repeat:
 	@mkdir -p $(BUILD)
 	@pass=0; fail=0; \
 	for i in $$(seq 1 $(REPEAT)); do \
-	  if $(MAKE) --no-print-directory test >$(BUILD)/run-$$i.log 2>&1; then \
+	  if $(MAKE) --no-print-directory test >/dev/null 2>&1; then \
 	    pass=$$((pass+1)); printf '.'; \
 	  else \
 	    fail=$$((fail+1)); printf 'F'; \
 	  fi; \
 	done; \
 	echo; \
-	echo "runs=$(REPEAT) pass=$$pass fail=$$fail  (logs: $(BUILD)/run-*.log)"; \
+	echo "runs=$(REPEAT) pass=$$pass fail=$$fail"; \
 	test $$fail -eq 0
 
 # ---------------------------------------------------------------------------

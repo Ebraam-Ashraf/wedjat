@@ -90,9 +90,7 @@ grep -E 'ptpass|Copying map fd|Attach successfully' build/bpftime.log
 the child took it. `make test BPFTIME_LOG=console` streams the unfiltered child
 output, including bpftime's own narration.
 
-`make repeat` keeps each run's own output in `build/run-N.log`; bpftime's log
-is a rotating file under `build/`, so it accumulates rather than being
-overwritten.
+`make repeat` prints a pass/fail tally without writing numbered per-run logs. The last run's detailed output remains in `build/test.log`, and bpftime diagnostics remain in `build/bpftime.log`.
 
 libbpf's own debug stream is off unless `LIBBPF_DEBUG=1`; libbpf *warnings* are
 always shown, since that is how a rejected object announces itself.
