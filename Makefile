@@ -33,7 +33,7 @@ docs-check:
 	@test -f kernels_to_trace/README.md
 	@test -f daemon/ebpf/uprobes/test/README.md
 	@test -f daemon/ebpf/kprobes/test/README.md
-	@test -f daemon/ebpf/device/README.md
+	@test -f daemon/ebpf/gpu/README.md
 	@test -f daemon/nvml/test/README.md
 
 kernels:

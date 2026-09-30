@@ -38,6 +38,39 @@ __global__ void scale_add_kernel(float *data, float scale, float bias, int n) {
     }
 }
 
+/* `scale_add_kernel<<<grid, block>>>(...)` does NOT call cudaLaunchKernel.
+ * In cuda_runtime.h that spelling is a `static __inline__` template, so nvcc
+ * inlines it into this translation unit and the real dynamic call becomes
+ * __cudaPushCallConfiguration + __cudaLaunchKernel. `nm -D` confirms it:
+ *
+ *   U __cudaLaunchKernel@libcudart.so.13
+ *
+ * bpftime intercepts kernel launches by replacing the *exported* symbols
+ * cudaLaunchKernel / cudaLaunchKernel_ptsz / cuLaunchKernel
+ * (nv_attach_impl.cpp: replace_hook_once). It never replaces
+ * __cudaLaunchKernel, so with the <<<>>> spelling the patched module is built,
+ * loaded, and then never launched: no probe runs and no event is ever
+ * produced, while every log line still looks healthy.
+ *
+ * Both symbols do exist in libcudart (cudaLaunchKernel@@libcudart.so.13 and
+ * __cudaLaunchKernel@@libcudart.so.13), so declaring the exported one by hand
+ * and calling it through a function pointer binds to the symbol bpftime hooks
+ * while going through the identical C runtime ABI underneath.
+ *
+ * Both call shapes do go through __cudaPushCallConfiguration /
+ * __cudaPopCallConfiguration, so registering the function with the runtime
+ * first keeps the out-of-line entry point's bookkeeping correct. */
+extern "C" cudaError_t cudaLaunchKernel(const void *func, dim3 gridDim,
+                                        dim3 blockDim, void **args,
+                                        size_t sharedMem, cudaStream_t stream);
+
+static cudaError_t launch_scale_add(float *data, float scale, float bias, int n,
+                                    int grid, int block) {
+    void *args[] = { &data, &scale, &bias, &n };
+    return cudaLaunchKernel(reinterpret_cast<const void *>(scale_add_kernel),
+                            dim3(grid), dim3(block), args, 0, 0);
+}
+
 int main() {
     const int n = env_int("WEDJAT_N", 1 << 20);
     const int iters = env_int("WEDJAT_ITERS", 20);
@@ -58,7 +91,7 @@ int main() {
     const int grid = (n + block - 1) / block;
 
     for (int i = 0; i < iters; ++i) {
-        scale_add_kernel<<<grid, block>>>(device, 1.0001f, 0.5f, n);
+        launch_scale_add(device, 1.0001f, 0.5f, n, grid, block);
         CUDA_CHECK(cudaGetLastError());
         CUDA_CHECK(cudaDeviceSynchronize());
 
