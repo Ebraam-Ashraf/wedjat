@@ -22,11 +22,13 @@ graph TD
     
     I --> J[Stage 1: SQLite Store]
     I --> K[Stage 2: eBPF & NVML Collector]
+    I --> L[Stage 3: Unix Socket Server]
     
-    J --> L(Wait for SIGINT/SIGTERM)
-    K --> L
+    J --> M(Wait for SIGINT/SIGTERM)
+    K --> M
+    L --> M
     
-    L --> M[Clean Shutdown]
+    M --> N(Clean Shutdown)
 ```
 
 ## 2. Path Isolation (`--dev` vs System)
@@ -62,22 +64,50 @@ The daemon uses the existing `bootstrap.Start` logic to bring up stages in a saf
    - Attaches uprobes and kprobes.
    - Starts the background Go goroutine to poll the BPF perf buffers and NVML, and writes events to the `store`.
 
-5. **Running State**
+5. **Stage 3: Socket Server (`sock.Start`)**
+   - Listens on `/run/wedjat/wedjat.sock` as the server; the CLI connects as a client.
+   - Fans out the collector's in-progress accumulator — the only data that exists nowhere else, since it is destroyed at each flush.
+   - Read-only toward clients. A client that connects, reads, and disconnects affects nothing on disk; a client that never connects also affects nothing.
+   - Shutdown removes the socket file and closes all client connections.
+
+6. **Running State**
    - The main goroutine blocks on `os.Signal` (SIGTERM, SIGINT).
 
 ## 4. Shutdown Sequence (Reverse Order)
 
 When `SIGINT` (Ctrl+C) or `SIGTERM` (systemd stop) is caught:
 
-1. **Stage 2 Shutdown (Collector)**
-   - Stop the polling goroutine.
+1. **Stage 3 Shutdown (Socket Server)**
+   - Close all client connections.
+   - Remove the socket file from the filesystem.
+
+2. **Stage 2 Shutdown (Collector)**
+   - Stop the polling goroutine (a final flush writes the in-progress minute).
    - Destroy BPF skeletons. Because eBPF programs are unpinned (in dev mode) or we explicitly tear them down via libbpf, they detach cleanly from the kernel.
    - Call `nvmlShutdown()`.
 
-2. **Stage 1 Shutdown (Store)**
+3. **Stage 1 Shutdown (Store)**
    - Checkpoint the SQLite WAL.
    - Write `clean_shutdown = 1`.
    - Close the database connections cleanly.
 
-3. **Lock Release**
+4. **Lock Release**
    - The lock file is released and closed.
+
+---
+
+## 5. Stage Summary
+
+| # | Stage | Writes | Purpose |
+| :--- | :--- | :--- | :--- |
+| 1 | `store` | SQLite | Durable history, both consumers' shared record |
+| 2 | `collector` | SQLite | NVML + eBPF sampling, aggregation, flush |
+| 3 | socket server | socket | Live in-progress minute for connected CLIs |
+
+All three stages are registered in `daemon/cmd/wedjatd/main.go`. The socket
+stage reads the collector's in-memory sample through `collector.Handle.Live()`;
+see `daemon/socket/README.md` for the protocol and limits.
+
+Only the store stage and the collector's flush touch disk. The socket server is
+read-only toward its clients, and the daemon writes history whether or not any
+client is connected. See [Data Flow](data_flow.md) for the full contract.

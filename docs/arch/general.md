@@ -80,7 +80,7 @@ Only unlocked with dynamic PTX injection — compiling eBPF bytecode to run *ins
 
 ## 3. Full System Architecture
 
-The diagram below shows how CPU-side processes, eBPF probes, kernel drivers, NVML, and on-device execution (Layer 5) all connect through the `wedjatd` daemon down to disk storage and the `wedjat` CLI.
+The diagram below shows how CPU-side processes, eBPF probes, kernel drivers, NVML, and on-device execution (Layer 5) all connect through the `wedjatd` daemon down to disk storage and the `wedjat` CLI. For the precise contract between sources, the store layer, and each consumer, see [Data Flow](data_flow.md).
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -146,15 +146,16 @@ The diagram below shows how CPU-side processes, eBPF probes, kernel drivers, NVM
 │  • Resolves raw kernel addresses (func) to symbol names via /proc/pid/exe   │
 │  • Computes UTC Anchor: (CLOCK_REALTIME - CLOCK_BOOTTIME)                  │
 └──────────────────────┬──────────────────────────────────┬───────────────────┘
-                       │                                  │
-                       ▼ Writes                           ▼ Pushes
+                        │                                  │
+                        ▼ Writes                           ▼ Pushes
 ┌─────────────────────────────────────────┐    ┌──────────────────────────────┐
-│ DISK STORAGE (/var/lib & /var/log)      │    │ UNIX DOMAIN SOCKET           │
+│ DISK STORAGE (/var/lib/wedjat)          │    │ UNIX DOMAIN SOCKET           │
 │                                         │    │ /run/wedjat/wedjat.sock      │
-│ • wedjat.db (SQLite WAL Mode)           │    │ (Stream 1s JSON Snapshots)   │
-│   1-second aggregated time-series rows  │    └──────────────┬───────────────┘
-│ • events.jsonl (JSON Lines Log)         │                   │
-│   Rare events (errors, stalls >10ms)    │                   │ Reads (No Root)
+│ • meta.db (SQLite WAL Mode)             │    │ (Live in-progress minute)    │
+│   gpus, procs, proc_gpu, incidents      │    └──────────────┬───────────────┘
+│ • YYYY-MM-DD.db (SQLite WAL Mode)       │                   │
+│   gpu_samples, agg, kernel_events       │                   │ Reads (No Root)
+│   1-minute aggregated time-series rows  │                   │
 └──────────────────────┬──────────────────┘                   │
                        │                                      │
                        └──────────────────┬───────────────────┘
@@ -162,18 +163,24 @@ The diagram below shows how CPU-side processes, eBPF probes, kernel drivers, NVM
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ wedjat CLI (Go TUI Client, Non-Root User)                                   │
 │                                                                             │
-│   • `wedjat top`     : Stream 1s live process table from Unix socket        │
-│   • `wedjat live`    : Tail live event stream from Unix socket              │
-│   • `wedjat history` : Query SQLite WAL directly for offline/past timelines │
+│   • `wedjat top`     : Live process table from the Unix socket              │
+│   • `wedjat live`    : Tail the live event stream from the Unix socket      │
+│   • `wedjat history` : Query SQLite directly for past timelines             │
+│                         (works with the daemon stopped)                     │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+The daemon is the sole writer; the CLI is a read-only client of both consumers.
+The socket is a required component — it is the only path to the in-progress
+minute, which exists in daemon memory and is destroyed at each flush. See
+[Data Flow](data_flow.md) for the full source-to-consumer contract.
 
 ### Key Takeaways from the Diagram
 
 1. **Process boundary** — every CUDA operation begins as a standard Linux CPU thread issuing calls to `libcuda.so`.
 2. **Fast-path aggregation** — high-frequency API calls (`cuLaunchKernel`, `cuMemcpyAsync`) update `BPF_MAP_TYPE_PERCPU_HASH` map counters in kernel space without a context switch to user space.
 3. **Slow-path ring buffer** — only rare events (errors, CPU stalls > 10 ms, process exits) stream through `BPF_MAP_TYPE_RINGBUF`, keeping disk I/O low.
-4. **Decoupled architecture** — the `wedjatd` daemon handles root privileges, eBPF probes, and database writes in the background; the `wedjat` CLI runs as a non-root client, reading the database or streaming over the Unix socket.
+4. **Decoupled architecture** — the `wedjatd` daemon handles root privileges, eBPF probes, database writes, and the live socket feed in the background; the `wedjat` CLI runs as a non-root client that reads history from the database and the current minute from the Unix socket.
 
 ---
 

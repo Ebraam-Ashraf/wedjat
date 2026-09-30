@@ -17,7 +17,7 @@ func setupOwnedDir(t *testing.T) (*Lock, string) {
 	}
 	t.Cleanup(func() { _ = lock.Close() })
 	dataPath := filepath.Join(root, "data")
-	if err := PrepareDataDir(lock, dataPath); err != nil {
+	if err := PrepareDataDir(lock, dataPath, false); err != nil {
 		t.Fatal(err)
 	}
 	return lock, dataPath
@@ -37,7 +37,7 @@ func TestPrepareRefusesNonEmptyDirectoryWithoutMarker(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dataPath, "keep.txt"), []byte("keep"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := PrepareDataDir(lock, dataPath); err == nil {
+	if err := PrepareDataDir(lock, dataPath, false); err == nil {
 		t.Fatal("non-empty unmarked directory was accepted")
 	}
 	if _, err := os.Stat(filepath.Join(dataPath, "keep.txt")); err != nil {
@@ -61,10 +61,10 @@ func TestPrepareAndWipeRefuseSymlinkAtDataPath(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if err := PrepareDataDir(lock, link); err == nil {
+	if err := PrepareDataDir(lock, link, false); err == nil {
 		t.Fatal("symlink data path was accepted")
 	}
-	if err := WipeOwnedData(lock, link); err == nil {
+	if err := WipeOwnedData(lock, link, false); err == nil {
 		t.Fatal("wipe accepted symlink data path")
 	}
 }
@@ -78,10 +78,10 @@ func TestPrepareAndWipeRefuseSymlinkInsideData(t *testing.T) {
 	if err := os.Symlink(target, filepath.Join(dataPath, "linked.txt")); err != nil {
 		t.Fatal(err)
 	}
-	if err := PrepareDataDir(lock, dataPath); err == nil {
+	if err := PrepareDataDir(lock, dataPath, false); err == nil {
 		t.Fatal("directory containing a symlink was accepted")
 	}
-	if err := WipeOwnedData(lock, dataPath); err == nil {
+	if err := WipeOwnedData(lock, dataPath, false); err == nil {
 		t.Fatal("wipe proceeded through a symlink")
 	}
 	content, err := os.ReadFile(target)
@@ -93,13 +93,13 @@ func TestPrepareAndWipeRefuseSymlinkInsideData(t *testing.T) {
 func TestPrepareRejectsUnsafePaths(t *testing.T) {
 	lock, _ := setupOwnedDir(t)
 	for _, path := range []string{"relative", string(filepath.Separator)} {
-		if err := PrepareDataDir(lock, path); err == nil {
+		if err := PrepareDataDir(lock, path, false); err == nil {
 			t.Errorf("accepted unsafe data path %q", path)
 		}
 	}
 	home, err := os.UserHomeDir()
 	if err == nil {
-		if err := PrepareDataDir(lock, home); err == nil {
+		if err := PrepareDataDir(lock, home, false); err == nil {
 			t.Errorf("accepted home directory %q", home)
 		}
 	}
@@ -146,7 +146,7 @@ func TestWipeOnlyRemovesKnownDataAndDumps(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := WipeOwnedData(lock, dataPath); err != nil {
+	if err := WipeOwnedData(lock, dataPath, false); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range known {
@@ -172,7 +172,7 @@ func TestWipeOnlyRemovesKnownDataAndDumps(t *testing.T) {
 
 func TestWipeRequiresLockAndValidMarker(t *testing.T) {
 	_, dataPath := setupOwnedDir(t)
-	if err := WipeOwnedData(nil, dataPath); err == nil {
+	if err := WipeOwnedData(nil, dataPath, false); err == nil {
 		t.Fatal("wipe proceeded without lock")
 	}
 	lock, err := AcquireLock(filepath.Join(t.TempDir(), "run", "daemon.lock"))
@@ -183,7 +183,7 @@ func TestWipeRequiresLockAndValidMarker(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dataPath, ".wedjat-data"), []byte("wrong\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := WipeOwnedData(lock, dataPath); err == nil {
+	if err := WipeOwnedData(lock, dataPath, false); err == nil {
 		t.Fatal("wipe accepted invalid marker")
 	}
 }

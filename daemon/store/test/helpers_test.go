@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"net/url"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,25 @@ import (
 
 func fixedClock(value time.Time) func() time.Time {
 	return func() time.Time { return value }
+}
+
+// mutableClock returns a clock and a setter, so a test can advance time the
+// way the daemon's tickers do. fixedClock captures its argument by value and
+// cannot be moved after the fact.
+func mutableClock(start time.Time) (func() time.Time, func(time.Time)) {
+	var mu sync.Mutex
+	current := start
+	clock := func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return current
+	}
+	advance := func(next time.Time) {
+		mu.Lock()
+		defer mu.Unlock()
+		current = next
+	}
+	return clock, advance
 }
 
 func testOpenOptions(root, boot string, now time.Time, reset bool) OpenOptions {

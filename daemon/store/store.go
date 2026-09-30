@@ -24,6 +24,7 @@ type OpenOptions struct {
 	ResetOnBoot bool
 	BootID      func() (string, error)
 	Clock       func() time.Time
+	AllowHomeDir bool
 }
 
 type StartupState struct {
@@ -50,8 +51,10 @@ func Open(ctx context.Context, options OpenOptions) (_ *Store, err error) {
 	if ctx == nil {
 		return nil, errors.New("store: nil context")
 	}
-	if err := config.ValidateDataPath(options.DataDir); err != nil {
-		return nil, fmt.Errorf("store data path: %w", err)
+	if !options.AllowHomeDir {
+		if err := config.ValidateDataPath(options.DataDir); err != nil {
+			return nil, fmt.Errorf("store data path: %w", err)
+		}
 	}
 	if !filepath.IsAbs(options.LockPath) || filepath.Clean(options.LockPath) != options.LockPath ||
 		pathWithin(options.DataDir, options.LockPath) {
@@ -84,7 +87,7 @@ func Open(ctx context.Context, options OpenOptions) (_ *Store, err error) {
 		}
 	}()
 
-	if err := PrepareDataDir(lock, options.DataDir); err != nil {
+	if err := PrepareDataDir(lock, options.DataDir, options.AllowHomeDir); err != nil {
 		return nil, fmt.Errorf("prepare data directory: %w", err)
 	}
 	metaPath := filepath.Join(options.DataDir, "meta.db")
@@ -93,7 +96,7 @@ func Open(ctx context.Context, options OpenOptions) (_ *Store, err error) {
 		return nil, err
 	}
 	if !metaExisted {
-		if err := WipeOwnedData(lock, options.DataDir); err != nil {
+		if err := WipeOwnedData(lock, options.DataDir, options.AllowHomeDir); err != nil {
 			return nil, fmt.Errorf("reset data without metadata DB: %w", err)
 		}
 	}
@@ -102,7 +105,7 @@ func Open(ctx context.Context, options OpenOptions) (_ *Store, err error) {
 		if !options.ResetOnBoot || !metaExisted {
 			return nil, fmt.Errorf("open metadata database: %w", err)
 		}
-		if wipeErr := WipeOwnedData(lock, options.DataDir); wipeErr != nil {
+		if wipeErr := WipeOwnedData(lock, options.DataDir, options.AllowHomeDir); wipeErr != nil {
 			return nil, fmt.Errorf("recover metadata database open failure (%v): %w", err, wipeErr)
 		}
 		metaExisted = false
@@ -119,7 +122,7 @@ func Open(ctx context.Context, options OpenOptions) (_ *Store, err error) {
 			return nil, errors.Join(err, closeErr)
 		}
 		s.meta = nil
-		if wipeErr := WipeOwnedData(lock, options.DataDir); wipeErr != nil {
+		if wipeErr := WipeOwnedData(lock, options.DataDir, options.AllowHomeDir); wipeErr != nil {
 			return nil, fmt.Errorf("recover corrupt metadata database (%v): %w", err, wipeErr)
 		}
 		metaExisted = false
@@ -161,7 +164,7 @@ func Open(ctx context.Context, options OpenOptions) (_ *Store, err error) {
 			return nil, err
 		}
 		s.meta = nil
-		if err := WipeOwnedData(lock, options.DataDir); err != nil {
+		if err := WipeOwnedData(lock, options.DataDir, options.AllowHomeDir); err != nil {
 			return nil, err
 		}
 		if s.meta, err = openSQLite(ctx, metaPath, false, false); err != nil {
@@ -356,6 +359,51 @@ func (s *Store) writeBootState(ctx context.Context, bootID string, now time.Time
 func putState(ctx context.Context, tx *sql.Tx, key, value string) error {
 	_, err := tx.ExecContext(ctx, "INSERT INTO daemon_state(k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v", key, value)
 	return err
+}
+
+// Heartbeat advances daemon_state.heartbeat_ts to the store's current time.
+//
+// Readers use this value to decide whether the daemon is live. Without a
+// periodic caller it stays frozen at the startup timestamp, which makes a
+// healthy daemon indistinguishable from a dead one. Call it on a ticker no
+// slower than the flush interval.
+func (s *Store) Heartbeat(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("store: nil heartbeat context")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.meta == nil {
+		return errors.New("store: heartbeat after close")
+	}
+	_, err := s.meta.ExecContext(ctx,
+		"INSERT INTO daemon_state(k, v) VALUES ('heartbeat_ts', ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+		strconv.FormatInt(s.clock().UTC().Unix(), 10))
+	return err
+}
+
+// HeartbeatAge reports how long ago the heartbeat was written. A negative
+// result means the stored heartbeat is in the future, which can happen when the
+// wall clock moves backwards.
+func (s *Store) HeartbeatAge(ctx context.Context) (time.Duration, error) {
+	if ctx == nil {
+		return 0, errors.New("store: nil heartbeat context")
+	}
+	s.mu.Lock()
+	closed, meta := s.closed, s.meta
+	s.mu.Unlock()
+	if closed || meta == nil {
+		return 0, errors.New("store: heartbeat age after close")
+	}
+	var stored string
+	if err := meta.QueryRowContext(ctx, "SELECT v FROM daemon_state WHERE k = 'heartbeat_ts'").Scan(&stored); err != nil {
+		return 0, err
+	}
+	unix, err := strconv.ParseInt(stored, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("store: malformed heartbeat_ts: %w", err)
+	}
+	return s.clock().UTC().Sub(time.Unix(unix, 0).UTC()), nil
 }
 
 func HasDataForBoot(ctx context.Context, db *sql.DB, bootID string) (bool, error) {

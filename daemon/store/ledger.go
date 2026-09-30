@@ -18,6 +18,16 @@ type GPUIdentity struct {
 	DriverVersion  string
 	ParentGPUID    *int64
 	SeenAt         int64
+	// LastSeen advances independently of SeenAt so repeated upserts of an
+	// unchanged GPU do not drag first_seen_ts forward.
+	LastSeen int64
+}
+
+func (g GPUIdentity) lastSeen() int64 {
+	if g.LastSeen > 0 {
+		return g.LastSeen
+	}
+	return g.SeenAt
 }
 
 type ProcessIdentity struct {
@@ -62,7 +72,7 @@ func (s *Store) UpsertGPU(ctx context.Context, gpu GPUIdentity) (int64, error) {
 	err := s.meta.QueryRowContext(ctx, gpuIdentityUpsert,
 		gpu.UUID, nullableInt(gpu.Index), gpu.Name, gpu.PCIBusID,
 		nullableInt(gpu.VRAMTotalBytes), gpu.DriverVersion,
-		nullableInt(gpu.ParentGPUID), gpu.SeenAt, gpu.SeenAt,
+		nullableInt(gpu.ParentGPUID), gpu.SeenAt, gpu.lastSeen(),
 	).Scan(&gpuID)
 	if err != nil {
 		return 0, fmt.Errorf("upsert GPU %s: %w", gpu.UUID, err)

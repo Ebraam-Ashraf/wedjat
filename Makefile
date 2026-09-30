@@ -35,6 +35,7 @@ check-whitespace:
 docs-check:
 	@test -f docs/development.md
 	@test -f kernels_to_trace/README.md
+	@test -f daemon/socket/README.md
 	@test -f daemon/ebpf/uprobes/test/README.md
 	@test -f daemon/ebpf/kprobes/test/README.md
 	@test -f daemon/ebpf/gpu/README.md
@@ -54,10 +55,11 @@ bpf:
 
 dev: bpf
 	@test -f daemon/cmd/wedjatd/main.go || { echo "dev blocked: daemon/cmd/wedjatd/main.go does not exist yet" >&2; exit 2; }
-	@mkdir -p "$(DIST_DIR)"
-	@cd daemon && CGO_ENABLED=1 GOOS=linux GOARCH=$(GOARCH) go build -o "$(DIST_DIR)/wedjatd" ./cmd/wedjatd
+	@mkdir -p ./dev/bin ./dev/etc/wedjat ./dev/var/lib/wedjat
+	@test -f ./dev/etc/wedjat/config.yaml || cp scripts/config.yaml ./dev/etc/wedjat/config.yaml
+	@cd daemon && CGO_ENABLED=1 GOOS=linux GOARCH=$(GOARCH) go build -o ../dev/bin/wedjatd ./cmd/wedjatd
 	@echo "==> Running wedjatd in local dev mode..."
-	@sudo "$(DIST_DIR)/wedjatd" --dev
+	@sudo ./dev/bin/wedjatd --dev
 
 release: bpf
 	@test -f daemon/cmd/wedjatd/main.go || { echo "release blocked: daemon/cmd/wedjatd/main.go does not exist yet" >&2; exit 2; }
@@ -77,3 +79,4 @@ install: release
 clean:
 	rm -f dist/wedjat-linux-*.tar.gz dist/wedjat-linux-*.tar.gz.sha256 dist/wedjatd dist/wedjat dist/wedjat-uninstall dist/config.yaml dist/wedjatd.service
 	-rmdir dist 2>/dev/null
+	-sudo rm -rf dev 2>/dev/null

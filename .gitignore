@@ -27,3 +27,4 @@ __pycache__/
 notes
 .kilodev-data/
 dev-config.yaml
+dev/

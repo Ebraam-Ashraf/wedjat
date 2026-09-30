@@ -78,12 +78,14 @@ func (l *Lock) held() bool {
 
 // PrepareDataDir creates an owned data directory or verifies its marker.
 // Callers must acquire and retain the daemon lock before this function.
-func PrepareDataDir(lock *Lock, path string) error {
+func PrepareDataDir(lock *Lock, path string, allowHomeDir bool) error {
 	if !lock.held() {
 		return errors.New("data directory preparation requires the daemon lock")
 	}
-	if err := config.ValidateDataPath(path); err != nil {
-		return err
+	if !allowHomeDir {
+		if err := config.ValidateDataPath(path); err != nil {
+			return err
+		}
 	}
 	if err := rejectSymlinkComponents(path); err != nil {
 		return err
@@ -147,12 +149,14 @@ func PrepareDataDir(lock *Lock, path string) error {
 
 // WipeOwnedData removes only known Wedjat files and dump contents. The marker
 // remains so a crash during reset can safely retry the operation next start.
-func WipeOwnedData(lock *Lock, path string) error {
+func WipeOwnedData(lock *Lock, path string, allowHomeDir bool) error {
 	if !lock.held() {
 		return errors.New("data wipe requires the daemon lock")
 	}
-	if err := config.ValidateDataPath(path); err != nil {
-		return err
+	if !allowHomeDir {
+		if err := config.ValidateDataPath(path); err != nil {
+			return err
+		}
 	}
 	if err := rejectSymlinkComponents(path); err != nil {
 		return err

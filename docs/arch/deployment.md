@@ -14,6 +14,21 @@ The single distribution format is a `.tar.gz` containing:
 
 Because Wedjat uses CGO to statically link against `libbpf` and includes all eBPF bytecode (`.skel.h`), the final `wedjatd` binary is completely standalone on the target machine, requiring only the proprietary NVIDIA driver (`libnvidia-ml.so`).
 
+## Runtime Paths and Permissions
+
+| Path | Owner | Mode | Purpose |
+| :--- | :--- | :--- | :--- |
+| `/var/lib/wedjat` | `root:wedjat` | `2750` | SQLite databases (durable history) |
+| `/etc/wedjat` | `root:wedjat` | `0750` | Configuration |
+| `/run/wedjat` | `root:wedjat` | `0770` | Live socket + daemon lock |
+| `/run/wedjat/wedjat.sock` | `root:wedjat` | `0660` | Live in-progress minute feed |
+
+The daemon runs as `User=root Group=wedjat` with `UMask=0027`. `RuntimeDirectory=wedjat` makes systemd create `/run/wedjat` with the right ownership on every start and remove it on stop, so the socket never outlives a stale process.
+
+Non-root users join the `wedjat` group (`usermod -aG wedjat <user>`, done automatically by `install.sh`) to read both the database and the socket. Group membership takes effect only after logging out and back in.
+
+See [Data Flow](data_flow.md) for what each consumer reads and why both are required.
+
 ## The Three User Flows
 
 ### Flow 1: Regular User (curl | bash)
