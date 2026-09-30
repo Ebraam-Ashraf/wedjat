@@ -25,4 +25,5 @@ __pycache__/
 *.swp
 .DS_Store
 notes
-.kilo
+.kilodev-data/
+dev-config.yaml
