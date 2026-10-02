@@ -188,7 +188,7 @@ By correlating the two layers, `wedjatd` can attribute an 850 µs submission del
 
 ## 4. C Code: Three Drafts of the Probe File
 
-These are three successive drafts of the Layer 3 probe file, kept as written. They diverge on struct layout and `api_id` numbering (`101–104` in the first, `201–202` in the second, full ring-buffer events in the third) — reconcile onto one shared `common.h` schema before wiring any of them into the real daemon build.
+The following material records three historical Layer 3 probe drafts. They diverge on struct layout and `api_id` numbering (`101–104` in the first, `201–202` in the second, and full ring-buffer events in the third). The current implementation uses `ebpf/common.h` and the probe files under `ebpf/kprobes/`; treat these drafts as design history, not buildable source.
 
 ### 4.1 `driver_kprobes.bpf.c` — full four-probe version
 

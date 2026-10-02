@@ -1,9 +1,15 @@
 #include "poller.h"
+#include "nvml_loader.h"
 
 #include <limits.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef WEDJAT_NVML_TEST
+extern int poller_test_fail_power_query;
+#endif
 
 static int nvml_needs_reinit(nvmlReturn_t result)
 {
@@ -11,7 +17,7 @@ static int nvml_needs_reinit(nvmlReturn_t result)
            result == NVML_ERROR_DRIVER_NOT_LOADED;
 }
 
-static void keep_first_error(nvmlReturn_t *dst, nvmlReturn_t result)
+static void poller_keep_first_error(nvmlReturn_t *dst, nvmlReturn_t result)
 {
     if (*dst == NVML_SUCCESS && result != NVML_SUCCESS)
         *dst = result;
@@ -22,19 +28,33 @@ int poller_gpu_memory_value_valid(unsigned long long value)
     return value != ULLONG_MAX;
 }
 
+/* Serialize all NVML calls because recovery may shut down and reinitialize the
+ * library while other callers hold device handles. */
+static pthread_mutex_t nvml_api_mu = PTHREAD_MUTEX_INITIALIZER;
+
+void poller_nvml_lock(void)
+{
+    pthread_mutex_lock(&nvml_api_mu);
+}
+
+void poller_nvml_unlock(void)
+{
+    pthread_mutex_unlock(&nvml_api_mu);
+}
+
 static nvmlReturn_t reinit_for_uuid(const char *uuid, nvmlDevice_t *device)
 {
-    nvmlReturn_t result = nvmlShutdown();
-    (void)result;
-    result = nvmlInit();
-    if (result != NVML_SUCCESS)
-        return result;
-    return nvmlDeviceGetHandleByUUID(uuid, device);
+    nvmlReturn_t result;
+    NVML_CALL(nvmlShutdown); /* ignore — we're reinitialising regardless */
+    result = NVML_CALL(nvmlInit);
+    if (result == NVML_SUCCESS)
+        result = NVML_CALL(nvmlDeviceGetHandleByUUID, uuid, device);
+    return result;
 }
 
 static nvmlReturn_t get_handle_by_uuid(const char *uuid, nvmlDevice_t *device)
 {
-    nvmlReturn_t result = nvmlDeviceGetHandleByUUID(uuid, device);
+    nvmlReturn_t result = NVML_CALL(nvmlDeviceGetHandleByUUID, uuid, device);
     if (nvml_needs_reinit(result)) {
         result = reinit_for_uuid(uuid, device);
         if (result == NVML_SUCCESS)
@@ -53,23 +73,30 @@ static nvmlReturn_t get_handle_by_uuid(const char *uuid, nvmlDevice_t *device)
 
 nvmlReturn_t poller_init(void)
 {
-    return nvmlInit();
+    poller_nvml_lock();
+    nvmlReturn_t result = NVML_CALL(nvmlInit);
+    poller_nvml_unlock();
+    return result;
 }
 
 void poller_shutdown(void)
 {
-    nvmlShutdown();
+    poller_nvml_lock();
+    NVML_CALL(nvmlShutdown);
+    poller_nvml_unlock();
 }
 
 nvmlReturn_t poller_device_count(unsigned int *count)
 {
-    nvmlReturn_t result = nvmlDeviceGetCount(count);
+    poller_nvml_lock();
+    nvmlReturn_t result = NVML_CALL(nvmlDeviceGetCount, count);
     if (nvml_needs_reinit(result)) {
-        nvmlShutdown();
-        result = nvmlInit();
+        NVML_CALL(nvmlShutdown);
+        result = NVML_CALL(nvmlInit);
         if (result == NVML_SUCCESS)
-            result = nvmlDeviceGetCount(count);
+            result = NVML_CALL(nvmlDeviceGetCount, count);
     }
+    poller_nvml_unlock();
     return result;
 }
 
@@ -82,45 +109,48 @@ void poller_device_metadata(unsigned int index, struct device_metadata *out)
     memset(out, 0, sizeof(*out));
     out->index = index;
 
-    result = nvmlDeviceGetHandleByIndex(index, &device);
+    poller_nvml_lock();
+    result = NVML_CALL(nvmlDeviceGetHandleByIndex, index, &device);
     if (nvml_needs_reinit(result)) {
-        nvmlShutdown();
-        result = nvmlInit();
+        NVML_CALL(nvmlShutdown);
+        result = NVML_CALL(nvmlInit);
         if (result == NVML_SUCCESS)
-            result = nvmlDeviceGetHandleByIndex(index, &device);
+            result = NVML_CALL(nvmlDeviceGetHandleByIndex, index, &device);
     }
     if (result != NVML_SUCCESS) {
         out->nvml_error = result;
+        poller_nvml_unlock();
         return;
     }
 
-    result = nvmlDeviceGetUUID(device, out->uuid, sizeof(out->uuid));
+    result = NVML_CALL(nvmlDeviceGetUUID, device, out->uuid, sizeof(out->uuid));
     if (result == NVML_SUCCESS)
         out->valid_fields |= DEVICE_META_UUID;
     else
-        keep_first_error(&out->nvml_error, result);
+        poller_keep_first_error(&out->nvml_error, result);
 
-    result = nvmlDeviceGetName(device, out->name, sizeof(out->name));
+    result = NVML_CALL(nvmlDeviceGetName, device, out->name, sizeof(out->name));
     if (result == NVML_SUCCESS)
         out->valid_fields |= DEVICE_META_NAME;
     else
-        keep_first_error(&out->nvml_error, result);
+        poller_keep_first_error(&out->nvml_error, result);
 
     memset(&pci, 0, sizeof(pci));
-    result = nvmlDeviceGetPciInfo(device, &pci);
+    result = NVML_CALL(nvmlDeviceGetPciInfo, device, &pci);
     if (result == NVML_SUCCESS) {
         snprintf(out->pci_bus_id, sizeof(out->pci_bus_id), "%s", pci.busId);
         out->valid_fields |= DEVICE_META_PCI_BUS_ID;
     } else {
-        keep_first_error(&out->nvml_error, result);
+        poller_keep_first_error(&out->nvml_error, result);
     }
 
-    result = nvmlSystemGetDriverVersion(out->driver_version,
-                                       sizeof(out->driver_version));
+    result = NVML_CALL(nvmlSystemGetDriverVersion, out->driver_version,
+                       sizeof(out->driver_version));
     if (result == NVML_SUCCESS)
         out->valid_fields |= DEVICE_META_DRIVER_VERSION;
     else
-        keep_first_error(&out->nvml_error, result);
+        poller_keep_first_error(&out->nvml_error, result);
+    poller_nvml_unlock();
 }
 
 void poller_snapshot_device_uuid(const char *uuid, struct device_snapshot *out)
@@ -139,30 +169,32 @@ void poller_snapshot_device_uuid(const char *uuid, struct device_snapshot *out)
     }
     snprintf(out->uuid, sizeof(out->uuid), "%s", uuid);
 
+    poller_nvml_lock();
     result = get_handle_by_uuid(uuid, &device);
     if (result != NVML_SUCCESS) {
         out->nvml_error = result;
+        poller_nvml_unlock();
         return;
     }
     out->valid = 1;
 
-    UUID_QUERY(uuid, device, result, nvmlDeviceGetIndex(device, &out->index));
+    UUID_QUERY(uuid, device, result, NVML_CALL(nvmlDeviceGetIndex, device, &out->index));
     if (result == NVML_SUCCESS)
         out->valid_fields |= DEVICE_VALID_INDEX;
     else
-        keep_first_error(&out->nvml_error, result);
+        poller_keep_first_error(&out->nvml_error, result);
 
     UUID_QUERY(uuid, device, result,
-               nvmlDeviceGetUtilizationRates(device, &utilization));
+               NVML_CALL(nvmlDeviceGetUtilizationRates, device, &utilization));
     if (result == NVML_SUCCESS) {
         out->gpu_util = utilization.gpu;
         out->mem_util = utilization.memory;
         out->valid_fields |= DEVICE_VALID_GPU_UTIL | DEVICE_VALID_MEM_UTIL;
     } else {
-        keep_first_error(&out->nvml_error, result);
+        poller_keep_first_error(&out->nvml_error, result);
     }
 
-    UUID_QUERY(uuid, device, result, nvmlDeviceGetMemoryInfo(device, &memory));
+    UUID_QUERY(uuid, device, result, NVML_CALL(nvmlDeviceGetMemoryInfo, device, &memory));
     if (result == NVML_SUCCESS) {
         if (memory.used != ULLONG_MAX) {
             out->mem_used = memory.used;
@@ -177,103 +209,113 @@ void poller_snapshot_device_uuid(const char *uuid, struct device_snapshot *out)
             out->valid_fields |= DEVICE_VALID_MEM_TOTAL;
         }
     } else {
-        keep_first_error(&out->nvml_error, result);
+        poller_keep_first_error(&out->nvml_error, result);
     }
 
     UUID_QUERY(uuid, device, result,
-               nvmlDeviceGetTemperature(device, NVML_TEMPERATURE_GPU, &value));
+               NVML_CALL(nvmlDeviceGetTemperature, device, NVML_TEMPERATURE_GPU, &value));
     if (result == NVML_SUCCESS) {
         out->temp_c = value;
         out->valid_fields |= DEVICE_VALID_TEMP;
     } else {
-        keep_first_error(&out->nvml_error, result);
+        poller_keep_first_error(&out->nvml_error, result);
     }
 
-    UUID_QUERY(uuid, device, result, nvmlDeviceGetPowerUsage(device, &value));
+#ifdef WEDJAT_NVML_TEST
+    if (poller_test_fail_power_query)
+        result = NVML_ERROR_NOT_SUPPORTED;
+    else
+#endif
+        UUID_QUERY(uuid, device, result,
+                   NVML_CALL(nvmlDeviceGetPowerUsage, device, &value));
     if (result == NVML_SUCCESS) {
         out->power_mw = value;
         out->valid_fields |= DEVICE_VALID_POWER;
     } else {
-        keep_first_error(&out->nvml_error, result);
+        poller_keep_first_error(&out->nvml_error, result);
     }
 
     UUID_QUERY(uuid, device, result,
-               nvmlDeviceGetClockInfo(device, NVML_CLOCK_SM, &value));
+               NVML_CALL(nvmlDeviceGetClockInfo, device, NVML_CLOCK_SM, &value));
     if (result == NVML_SUCCESS) {
         out->sm_clock_mhz = value;
         out->valid_fields |= DEVICE_VALID_SM_CLOCK;
     } else {
-        keep_first_error(&out->nvml_error, result);
+        poller_keep_first_error(&out->nvml_error, result);
     }
 
     UUID_QUERY(uuid, device, result,
-               nvmlDeviceGetClockInfo(device, NVML_CLOCK_MEM, &value));
+               NVML_CALL(nvmlDeviceGetClockInfo, device, NVML_CLOCK_MEM, &value));
     if (result == NVML_SUCCESS) {
         out->mem_clock_mhz = value;
         out->valid_fields |= DEVICE_VALID_MEM_CLOCK;
     } else {
-        keep_first_error(&out->nvml_error, result);
+        poller_keep_first_error(&out->nvml_error, result);
     }
 
     UUID_QUERY(uuid, device, result,
 #if NVML_API_VERSION >= 13
-               nvmlDeviceGetCurrentClocksEventReasons(device, &out->throttle_reasons));
+               NVML_CALL(nvmlDeviceGetCurrentClocksEventReasons, device,
+                         &out->throttle_reasons));
 #else
-               nvmlDeviceGetCurrentClocksThrottleReasons(device, &out->throttle_reasons));
+               NVML_CALL(nvmlDeviceGetCurrentClocksThrottleReasons, device,
+                         &out->throttle_reasons));
 #endif
     if (result == NVML_SUCCESS) {
         out->valid_fields |= DEVICE_VALID_THROTTLE_REASONS;
     } else {
-        keep_first_error(&out->nvml_error, result);
+        poller_keep_first_error(&out->nvml_error, result);
     }
 
     UUID_QUERY(uuid, device, result,
-               nvmlDeviceGetPowerManagementLimit(device, &out->power_limit_mw));
+               NVML_CALL(nvmlDeviceGetPowerManagementLimit, device,
+                         &out->power_limit_mw));
     if (result == NVML_SUCCESS) {
         out->valid_fields |= DEVICE_VALID_POWER_LIMIT;
     } else {
-        keep_first_error(&out->nvml_error, result);
+        poller_keep_first_error(&out->nvml_error, result);
     }
 
     UUID_QUERY(uuid, device, result,
-               nvmlDeviceGetTotalEccErrors(device, NVML_MEMORY_ERROR_TYPE_CORRECTED,
-                                           NVML_VOLATILE_ECC, &ecc));
+               NVML_CALL(nvmlDeviceGetTotalEccErrors, device,
+                         NVML_MEMORY_ERROR_TYPE_CORRECTED, NVML_VOLATILE_ECC, &ecc));
     if (result == NVML_SUCCESS) {
         out->ecc_corrected_volatile = ecc;
         out->valid_fields |= DEVICE_VALID_ECC_CORRECTED_VOLATILE;
     } else {
-        keep_first_error(&out->nvml_error, result);
+        poller_keep_first_error(&out->nvml_error, result);
     }
 
     UUID_QUERY(uuid, device, result,
-               nvmlDeviceGetTotalEccErrors(device, NVML_MEMORY_ERROR_TYPE_UNCORRECTED,
-                                           NVML_VOLATILE_ECC, &ecc));
+               NVML_CALL(nvmlDeviceGetTotalEccErrors, device,
+                         NVML_MEMORY_ERROR_TYPE_UNCORRECTED, NVML_VOLATILE_ECC, &ecc));
     if (result == NVML_SUCCESS) {
         out->ecc_uncorrected_volatile = ecc;
         out->valid_fields |= DEVICE_VALID_ECC_UNCORRECTED_VOLATILE;
     } else {
-        keep_first_error(&out->nvml_error, result);
+        poller_keep_first_error(&out->nvml_error, result);
     }
 
     UUID_QUERY(uuid, device, result,
-               nvmlDeviceGetTotalEccErrors(device, NVML_MEMORY_ERROR_TYPE_CORRECTED,
-                                           NVML_AGGREGATE_ECC, &ecc));
+               NVML_CALL(nvmlDeviceGetTotalEccErrors, device,
+                         NVML_MEMORY_ERROR_TYPE_CORRECTED, NVML_AGGREGATE_ECC, &ecc));
     if (result == NVML_SUCCESS) {
         out->ecc_corrected_aggregate = ecc;
         out->valid_fields |= DEVICE_VALID_ECC_CORRECTED_AGGREGATE;
     } else {
-        keep_first_error(&out->nvml_error, result);
+        poller_keep_first_error(&out->nvml_error, result);
     }
 
     UUID_QUERY(uuid, device, result,
-               nvmlDeviceGetTotalEccErrors(device, NVML_MEMORY_ERROR_TYPE_UNCORRECTED,
-                                           NVML_AGGREGATE_ECC, &ecc));
+               NVML_CALL(nvmlDeviceGetTotalEccErrors, device,
+                         NVML_MEMORY_ERROR_TYPE_UNCORRECTED, NVML_AGGREGATE_ECC, &ecc));
     if (result == NVML_SUCCESS) {
         out->ecc_uncorrected_aggregate = ecc;
         out->valid_fields |= DEVICE_VALID_ECC_UNCORRECTED_AGGREGATE;
     } else {
-        keep_first_error(&out->nvml_error, result);
+        poller_keep_first_error(&out->nvml_error, result);
     }
+    poller_nvml_unlock();
 }
 
 typedef nvmlReturn_t (*process_query_fn)(nvmlDevice_t, unsigned int *,
@@ -284,6 +326,9 @@ static nvmlReturn_t query_process_list(nvmlDevice_t device,
                                        nvmlProcessInfo_t **infos_out,
                                        unsigned int *count_out)
 {
+    if (!query)
+        return NVML_ERROR_NOT_SUPPORTED;
+
     unsigned int needed = 0;
     nvmlReturn_t result = query(device, &needed, NULL);
 
@@ -310,7 +355,13 @@ static nvmlReturn_t query_process_list(nvmlDevice_t device,
         free(infos);
         if (result != NVML_ERROR_INSUFFICIENT_SIZE)
             return result;
-        needed = returned;
+        /* Some NVML versions do not update `returned` on INSUFFICIENT_SIZE.
+         * If returned did not grow beyond what we just tried, double the
+         * capacity ourselves so the loop makes progress. */
+        if (returned > capacity)
+            needed = returned;
+        else
+            needed = capacity * 2;
     }
     return NVML_ERROR_INSUFFICIENT_SIZE;
 }
@@ -346,6 +397,10 @@ static nvmlReturn_t query_processes_uuid(const char *uuid,
             struct process_entry *grown =
                 realloc(out->entries, (out->count + 1) * sizeof(*out->entries));
             if (!grown) {
+                /* Partial entries already in `out` remain valid; the caller
+                 * will see whatever was accumulated before this failure.
+                 * Return the error so the caller records it, but do not free
+                 * out->entries — that belongs to the caller via destroy(). */
                 free(infos);
                 return NVML_ERROR_MEMORY;
             }
@@ -371,6 +426,9 @@ static nvmlReturn_t query_processes_uuid(const char *uuid,
 
 void poller_snapshot_processes_uuid(const char *uuid, struct process_snapshot *out)
 {
+    process_query_fn compute_query = NULL;
+    process_query_fn graphics_query = NULL;
+    process_query_fn mps_query = NULL;
     nvmlReturn_t compute;
     nvmlReturn_t graphics;
     nvmlReturn_t mps;
@@ -381,23 +439,50 @@ void poller_snapshot_processes_uuid(const char *uuid, struct process_snapshot *o
         return;
     }
 
-    compute = query_processes_uuid(uuid, nvmlDeviceGetComputeRunningProcesses,
-                                   out, PROCESS_SOURCE_COMPUTE);
+    poller_nvml_lock();
+    wedjat_nvml_resolve((void **)&compute_query,
+                        NVML_SYMBOL(nvmlDeviceGetComputeRunningProcesses));
+    wedjat_nvml_resolve((void **)&graphics_query,
+                        NVML_SYMBOL(nvmlDeviceGetGraphicsRunningProcesses));
+    wedjat_nvml_resolve((void **)&mps_query,
+                        NVML_SYMBOL(nvmlDeviceGetMPSComputeRunningProcesses));
+
+    compute = query_processes_uuid(uuid, compute_query, out, PROCESS_SOURCE_COMPUTE);
     out->compute_error = compute;
-    graphics = query_processes_uuid(uuid, nvmlDeviceGetGraphicsRunningProcesses,
-                                    out, PROCESS_SOURCE_GRAPHICS);
+    graphics = query_processes_uuid(uuid, graphics_query, out, PROCESS_SOURCE_GRAPHICS);
     out->graphics_error = graphics;
-    mps = query_processes_uuid(uuid, nvmlDeviceGetMPSComputeRunningProcesses,
-                               out, PROCESS_SOURCE_MPS);
+    mps = query_processes_uuid(uuid, mps_query, out, PROCESS_SOURCE_MPS);
     out->mps_error = mps;
 
     out->valid = compute == NVML_SUCCESS || graphics == NVML_SUCCESS ||
                  mps == NVML_SUCCESS;
+    out->complete = out->valid &&
+                    (compute == NVML_SUCCESS || compute == NVML_ERROR_NOT_SUPPORTED) &&
+                    (graphics == NVML_SUCCESS || graphics == NVML_ERROR_NOT_SUPPORTED) &&
+                    (mps == NVML_SUCCESS || mps == NVML_ERROR_NOT_SUPPORTED);
+    if (compute != NVML_SUCCESS && compute != NVML_ERROR_NOT_SUPPORTED)
+        poller_keep_first_error(&out->nvml_error, compute);
+    if (graphics != NVML_SUCCESS && graphics != NVML_ERROR_NOT_SUPPORTED)
+        poller_keep_first_error(&out->nvml_error, graphics);
+    if (mps != NVML_SUCCESS && mps != NVML_ERROR_NOT_SUPPORTED)
+        poller_keep_first_error(&out->nvml_error, mps);
     if (!out->valid) {
-        out->nvml_error = compute != NVML_SUCCESS ? compute :
-                          (graphics != NVML_SUCCESS ? graphics : mps);
+        nvmlReturn_t compute_error = out->compute_error;
+        nvmlReturn_t graphics_error = out->graphics_error;
+        nvmlReturn_t mps_error = out->mps_error;
+        nvmlReturn_t nvml_error = out->nvml_error;
+        /* Free any partial entries that may have been allocated before a
+         * mid-query failure.  poller_process_snapshot_destroy handles the
+         * case where entries is NULL. */
         poller_process_snapshot_destroy(out);
+        out->compute_error = compute_error;
+        out->graphics_error = graphics_error;
+        out->mps_error = mps_error;
+        out->nvml_error = nvml_error != NVML_SUCCESS ? nvml_error :
+                          (compute_error != NVML_SUCCESS ? compute_error :
+                           (graphics_error != NVML_SUCCESS ? graphics_error : mps_error));
     }
+    poller_nvml_unlock();
 }
 
 void poller_process_snapshot_destroy(struct process_snapshot *snapshot)

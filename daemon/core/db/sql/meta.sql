@@ -43,13 +43,6 @@ CREATE TABLE IF NOT EXISTS proc_gpu (
     last_seen_ts INTEGER NOT NULL,
     peak_vram_bytes INTEGER,
     last_vram_bytes INTEGER,
-    launches INTEGER NOT NULL DEFAULT 0,
-    memcpy_bytes INTEGER NOT NULL DEFAULT 0,
-    alloc_bytes INTEGER NOT NULL DEFAULT 0,
-    free_bytes INTEGER NOT NULL DEFAULT 0,
-    sync_calls INTEGER NOT NULL DEFAULT 0,
-    worst_sync_us INTEGER NOT NULL DEFAULT 0,
-    errors INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (proc_id, gpu_id)
 ) WITHOUT ROWID;
 

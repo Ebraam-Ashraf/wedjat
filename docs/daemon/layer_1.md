@@ -182,7 +182,7 @@ To keep overhead low (targeting roughly under 0.4%) and avoid disk-log explosion
 
 ## Implementation
 
-### `daemon/ebpf/common.h`
+### `ebpf/common.h`
 
 Shared header included by all Layer 1–3 eBPF C programs, as well as the user-space daemon — defines map keys, values, and event structs.
 
@@ -236,7 +236,7 @@ struct cuda_event {
 #endif /* __COMMON_H */
 ```
 
-### `daemon/ebpf/uprobes/host_ctx.bpf.c`
+### `ebpf/uprobes/host_ctx.bpf.c`
 
 The primary Layer 1 program. It does two things: (1) extracts host process metadata via the six kernel helpers above, and (2) maintains the `tid_to_device` / `ctx_to_device` mappings by hooking `cuCtxSetCurrent` and `cuDevicePrimaryCtxRetain`.
 

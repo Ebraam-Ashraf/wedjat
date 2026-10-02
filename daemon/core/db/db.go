@@ -252,6 +252,16 @@ func checkpoint(ctx context.Context, database *sql.DB) error {
 }
 
 // installSchema brings a database up to schemaVersion.
+//
+// The schema file is executed as a single blob so that multi-statement
+// constructs (triggers, views with semicolons inside BEGIN…END) are never
+// split mid-statement.
+//
+// PRAGMA user_version is intentionally set *after* the transaction commits.
+// SQLite executes PRAGMA user_version immediately, outside of any transaction
+// semantics, so placing it inside the transaction gives a false sense of
+// atomicity: the version would be bumped even if Commit() later failed,
+// leaving the database at the new version number but with no tables.
 func installSchema(ctx context.Context, database *sql.DB, name string) error {
 	var version int
 	if err := database.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
@@ -275,20 +285,22 @@ func installSchema(ctx context.Context, database *sql.DB, name string) error {
 	}
 	defer tx.Rollback()
 
-	for _, statement := range strings.Split(string(contents), ";") {
-		statement = strings.TrimSpace(statement)
-		if statement == "" {
-			continue
-		}
-		if _, err := tx.ExecContext(ctx, statement); err != nil {
-			return fmt.Errorf("apply %s: %w", name, err)
-		}
+	if _, err := tx.ExecContext(ctx, string(contents)); err != nil {
+		return fmt.Errorf("apply %s: %w", name, err)
 	}
 
-	if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// Set the version only after the schema transaction has been durably
+	// committed.  A failure here leaves the version at 0, so the next
+	// startup will re-apply the schema idempotently (CREATE TABLE IF NOT
+	// EXISTS) and then succeed in bumping the version.
+	if _, err := database.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion)); err != nil {
 		return fmt.Errorf("set schema version: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 // RotateDay closes the currently open daily database and opens the one for at.

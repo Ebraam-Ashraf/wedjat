@@ -48,7 +48,7 @@
 #include <bpf/bpf_tracing.h>
 #include "common.h"
 
-char LICENSE[] SEC("license") = "Dual BSD/GPL";
+char LICENSE[] SEC("license") = "GPL";
 
 // bpftime GPU helpers, from attach/nv_attach_impl/trampoline/default_trampoline.cu
 // 501 puts  502 globaltimer  503 blockIdx  504 blockDim  505 threadIdx
@@ -72,33 +72,40 @@ static u64  (*bpf_get_sm_id)(void)                          = (void *)509;
 // At 256 threads/block this covers WEDJAT_MAX_GLOBAL_TID/256 blocks.
 #define WEDJAT_MAX_GLOBAL_TID 8192
 
-static __always_inline bool wedjat_report_this_block(u64 *ctaid_x)
+static __always_inline bool wedjat_report_this_block(u64 *ctaid_x, u64 *ctaid_y, u64 *ctaid_z)
 {
-    u64 bx, by, bz, bd[3], td[3];
+    u64 bx, by, bz, bdx, bdy, bdz, td[3];
     bpf_get_thread_idx(&td[0], &td[1], &td[2]);
     /* one report per block: thread (0,0,0) only */
     if (td[0] || td[1] || td[2])
         return false;
     bpf_get_block_idx(&bx, &by, &bz);
-    bpf_get_block_dim(&bd[0], &bd[1], &bd[2]);
+    bpf_get_block_dim(&bdx, &bdy, &bdz);
     *ctaid_x = bx;
-    return bx * bd[0] < WEDJAT_MAX_GLOBAL_TID;
+    *ctaid_y = by;
+    *ctaid_z = bz;
+    return bx * bdx < WEDJAT_MAX_GLOBAL_TID;
 }
 
 // kernel entry
 SEC("kprobe/" WEDJAT_TARGET_SYM)
 int cuda__trace_sm_block(void)
 {
-    u64 bx = 0;
-    if (!wedjat_report_this_block(&bx))
+    u64 bx = 0, by = 0, bz = 0;
+    if (!wedjat_report_this_block(&bx, &by, &bz))
         return 0;
 
     struct dev_event e = {};
     e.api_id  = EVENT_SM_BLOCK_START;
     e.sm_id   = bpf_get_sm_id();
     e.ctaid_x = bx;
-    e.ctaid_y = 0;
-    e.ctaid_z = 0;
+    e.ctaid_y = by;
+    e.ctaid_z = bz;
+    /* bpf_get_current_pid_tgid is helper 14 in the kernel, but bpftime
+     * remaps it to return the host thread's pid_tgid when running in GPU
+     * context.  The exact helper number in bpftime's GPU table is not
+     * documented here — it works only because bpftime remaps standard
+     * helper IDs to GPU-appropriate implementations. */
     e.pid     = bpf_get_current_pid_tgid() >> 32;
     e.ts_ns   = bpf_get_globaltimer();
 
@@ -110,16 +117,16 @@ int cuda__trace_sm_block(void)
 SEC("kretprobe/" WEDJAT_TARGET_SYM)
 int cuda__trace_sm_block_ret(void)
 {
-    u64 bx = 0;
-    if (!wedjat_report_this_block(&bx))
+    u64 bx = 0, by = 0, bz = 0;
+    if (!wedjat_report_this_block(&bx, &by, &bz))
         return 0;
 
     struct dev_event e = {};
     e.api_id  = EVENT_SM_BLOCK_END;
     e.sm_id   = bpf_get_sm_id();
     e.ctaid_x = bx;
-    e.ctaid_y = 0;
-    e.ctaid_z = 0;
+    e.ctaid_y = by;
+    e.ctaid_z = bz;
     e.pid     = bpf_get_current_pid_tgid() >> 32;
     e.ts_ns   = bpf_get_globaltimer();
 

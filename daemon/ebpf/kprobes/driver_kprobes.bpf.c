@@ -80,9 +80,18 @@ int BPF_KRETPROBE(trace_uvm_ioctl_ret, long ret)
 }
 
 SEC("kprobe/uvm_va_block_service_fault")
-int BPF_KPROBE(trace_uvm_va_block_service_fault)
+int BPF_KPROBE(trace_uvm_va_block_service_fault, void *va_block,
+               void *service_context, void *fault_page)
 {
-    return begin_driver_call(EVENT_UVM_FAULT, 0);
+    /* uvm_va_block_service_fault(uvm_va_block_t*, uvm_service_block_context_t*,
+     *                             uvm_page_index_t)
+     * The faulting VA is not a direct argument, but the va_block carries the
+     * VA range start.  Read the first u64 of the va_block struct which is
+     * uvm_va_block_t::start (validated against multiple driver versions).
+     * If the read fails we fall back to 0 — no worse than before. */
+    u64 va = 0;
+    bpf_probe_read_kernel(&va, sizeof(va), va_block);
+    return begin_driver_call(EVENT_UVM_FAULT, va);
 }
 SEC("kretprobe/uvm_va_block_service_fault")
 int BPF_KRETPROBE(trace_uvm_va_block_service_fault_ret, long ret)

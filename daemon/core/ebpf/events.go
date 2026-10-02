@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/Ebraam-Ashraf/wedjat/daemon/core/db"
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/ringbuf"
 	"golang.org/x/sys/unix"
 )
@@ -68,20 +69,133 @@ func (t *Tracer) handleEvent(ctx context.Context, database *db.DB, ids *tracerId
 		}
 
 	case eventProcExit:
-		// Resolve before forgetting the cache, since closing the row needs
-		// the id. A process the tracer never identified has no row to close.
-		if procID, err := ids.processID(ctx, database, event.Tgid); err == nil {
+		// The exiting process is no longer safely resolvable through /proc. Use
+		// only a cache entry whose /proc start ticks match the exit generation.
+		if procID, ok := ids.cachedProcessID(event.Tgid, event.StartBoottimeNs); ok {
 			if _, err := database.EndProcess(ctx, procID, int64(event.TsNano/1e9), "exit"); err != nil {
 				log.Printf("tracer: close process %d: %v", event.Tgid, err)
 			}
 		}
+		if err := t.clearProcessState(event.Tgid, event.StartBoottimeNs); err != nil {
+			log.Printf("tracer: clear pinned state for tgid %d: %v", event.Tgid, err)
+		}
 		// Drop the cached row so a recycled PID resolves to a new process
 		// instead of inheriting the old one's row.
-		ids.forget(event.Tgid)
+		ids.forget(event.Tgid, event.StartBoottimeNs)
 
 	case eventSync:
 		t.reportSyncStall(ctx, database, ids, event)
 	}
+}
+
+// stateBelongsToProcess reports whether a map entry's start_boottime_ns was
+// written by the same process generation as the exit event. It fails closed:
+// when either timestamp is zero the entry is treated as belonging to the
+// exiting process and will be deleted, because an entry with no generation
+// token can never be attributed to any other process.
+func stateBelongsToProcess(tgid uint32, ownerStart, eventStart uint64) bool {
+	if tgid == 0 || ownerStart == 0 {
+		return false
+	}
+	return ownerStart == eventStart
+}
+
+// clearProcessState removes only state from the process generation named by
+// the exit event. A PID may already have been reused by the time userspace
+// handles that event, so matching by TGID alone could erase the new process.
+func (t *Tracer) clearProcessState(tgid uint32, startBoottimeNs uint64) error {
+	if tgid == 0 || startBoottimeNs == 0 {
+		return errors.New("missing process generation in exit event")
+	}
+
+	if m := t.collection.Maps["tid_to_device"]; m != nil {
+		for {
+			removed := false
+			it := m.Iterate()
+			var key threadKey
+			var value deviceBinding
+			for it.Next(&key, &value) {
+				if uint32(key.PidTgid>>32) != tgid ||
+					!stateBelongsToProcess(tgid, value.StartBoottimeNs, startBoottimeNs) {
+					continue
+				}
+				if err := m.Delete(&key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+					return fmt.Errorf("delete tid_to_device: %w", err)
+				}
+				removed = true
+			}
+			if err := it.Err(); err != nil {
+				return fmt.Errorf("iterate tid_to_device: %w", err)
+			}
+			if !removed {
+				break
+			}
+		}
+	}
+
+	if m := t.collection.Maps["pid_to_device"]; m != nil {
+		key := tgid
+		var value deviceBinding
+		if err := m.Lookup(key, &value); err == nil &&
+			stateBelongsToProcess(tgid, value.StartBoottimeNs, startBoottimeNs) {
+			if err := m.Delete(key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+				return fmt.Errorf("delete pid_to_device: %w", err)
+			}
+		} else if err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return fmt.Errorf("lookup pid_to_device: %w", err)
+		}
+	}
+
+	if m := t.collection.Maps["ctx_to_device"]; m != nil {
+		for {
+			removed := false
+			it := m.Iterate()
+			var key ctxKey
+			var value deviceBinding
+			for it.Next(&key, &value) {
+				if key.Tgid != tgid ||
+					!stateBelongsToProcess(tgid, value.StartBoottimeNs, startBoottimeNs) {
+					continue
+				}
+				if err := m.Delete(&key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+					return fmt.Errorf("delete ctx_to_device: %w", err)
+				}
+				removed = true
+			}
+			if err := it.Err(); err != nil {
+				return fmt.Errorf("iterate ctx_to_device: %w", err)
+			}
+			if !removed {
+				break
+			}
+		}
+	}
+
+	if m := t.collection.Maps["alloc_map"]; m != nil {
+		for {
+			removed := false
+			it := m.Iterate()
+			var key allocKey
+			var value allocVal
+			for it.Next(&key, &value) {
+				if key.Tgid != tgid ||
+					!stateBelongsToProcess(tgid, value.StartBoottimeNs, startBoottimeNs) {
+					continue
+				}
+				if err := m.Delete(&key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+					return fmt.Errorf("delete alloc_map: %w", err)
+				}
+				removed = true
+			}
+			if err := it.Err(); err != nil {
+				return fmt.Errorf("iterate alloc_map: %w", err)
+			}
+			if !removed {
+				break
+			}
+		}
+	}
+	return nil
 }
 
 // reportSyncStall records a sync that took longer than the configured
@@ -100,7 +214,7 @@ func (t *Tracer) reportSyncStall(ctx context.Context, database *db.DB, ids *trac
 	// An unresolvable device is stored as NULL rather than as zero, so an
 	// incident is never pinned to whatever GPU happens to have id 0.
 	var gpu *int64
-	if gpuID, ok := ids.gpuID(event.DeviceOrdinal); ok {
+	if gpuID, ok := ids.gpuID(event.Tgid, event.DeviceOrdinal); ok {
 		gpu = &gpuID
 	}
 
@@ -156,11 +270,18 @@ func (t *Tracer) scanHungSyncs(ctx context.Context, database *db.DB, ids *tracer
 			continue
 		}
 
-		// The entry is per thread, so only the CPU that owns it has a start
-		// time; the rest are zero and must not be read as infinitely old.
+		// The inflight entry is per-thread, so exactly one CPU slot holds a
+		// non-zero start time — the one that recorded the call entry. The
+		// remaining slots are zero and must be ignored. We want the earliest
+		// (smallest) non-zero value: if more than one CPU ever has a non-zero
+		// start (e.g. after an LRU rebalance), taking the maximum would make
+		// the stall appear shorter than it really is.
 		var start uint64
 		for _, v := range perCPU {
-			if v.StartTsNs > start {
+			if v.StartTsNs == 0 {
+				continue
+			}
+			if start == 0 || v.StartTsNs < start {
 				start = v.StartTsNs
 			}
 		}

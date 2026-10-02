@@ -86,12 +86,53 @@ type inflightVal struct {
 	Flags         uint32
 }
 
-type statsVal struct {
+type threadKey struct {
+	PidTgid uint64
+}
+
+type ctxKey struct {
+	Tgid uint32
+	Pad  uint32
+	Ctx  uint64
+}
+
+type allocKey struct {
+	Tgid    uint32
+	Pad     uint32
+	Address uint64
+}
+
+type deviceBinding struct {
+	DeviceOrdinal   uint32
+	Pad             uint32
+	StartBoottimeNs uint64
+}
+
+type allocVal struct {
+	Bytes           uint64
+	DeviceOrdinal   uint32
+	Pad             uint32
+	StartBoottimeNs uint64
+}
+
+// kernelStats mirrors the kernel's stats_val struct from common.h.
+// Field order and width must match exactly; the cilium/ebpf library reads the
+// per-CPU map value directly into this struct.
+//
+//	struct stats_val {
+//	    u64 ringbuf_drops;
+//	    u64 map_update_failures;
+//	    u64 unknown_device_events;
+//	    u64 alloc_free_misses;
+//	};
+type kernelStats struct {
 	RingbufDrops        uint64
 	MapUpdateFailures   uint64
 	UnknownDeviceEvents uint64
 	AllocFreeMisses     uint64
 }
+
+type statsVal = kernelStats
 
 type configVal struct {
 	Flags       uint32
@@ -110,6 +151,7 @@ type Tracer struct {
 	statsMap   *ebpf.Map
 	inflight   *ebpf.Map
 	reader     *ringbuf.Reader
+	backlog    aggregateBacklog
 
 	// sections maps a program key to the ELF section it came from. The loaded
 	// spec does not carry it, and the section is what decides how to attach.
@@ -126,18 +168,23 @@ type Tracer struct {
 // Close releases every link and map. Pinned state maps are left in place on
 // purpose: they are meant to survive the daemon.
 func (t *Tracer) Close() error {
+	var errs []error
 	t.closeOnce.Do(func() {
 		if t.reader != nil {
-			t.reader.Close()
+			if err := t.reader.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close ring buffer reader: %w", err))
+			}
 		}
 		for _, l := range t.links {
-			l.Close()
+			if err := l.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close link: %w", err))
+			}
 		}
 		if t.collection != nil {
 			t.collection.Close()
 		}
 	})
-	return nil
+	return errors.Join(errs...)
 }
 
 // SetConfig writes the daemon's tracing configuration into the kernel side.
@@ -175,21 +222,40 @@ func (t *Tracer) Stats() (Stats, error) {
 	if t.statsMap == nil {
 		return Stats{}, errors.New("tracer: stats_map missing")
 	}
-	var out Stats
-	for slot := uint32(0); slot < statsSlots; slot++ {
+	out, err := sumKernelStats(func(slot uint32) ([]statsVal, error) {
 		var perCPU []statsVal
 		if err := t.statsMap.Lookup(slot, &perCPU); err != nil {
-			continue
+			return nil, err
 		}
-		for _, v := range perCPU {
-			out.RingbufDrops += v.RingbufDrops
-			out.MapUpdateFailures += v.MapUpdateFailures
-			out.UnknownDeviceEvents += v.UnknownDeviceEvents
-			out.AllocFreeMisses += v.AllocFreeMisses
-		}
+		return perCPU, nil
+	})
+	if err != nil {
+		return Stats{}, err
 	}
 	out.Unattributed = uint64(unattributed.Load())
 	return out, nil
+}
+
+func sumKernelStats(read func(uint32) ([]statsVal, error)) (Stats, error) {
+	var total kernelStats
+	for slot := uint32(0); slot < statsSlots; slot++ {
+		perCPU, err := read(slot)
+		if err != nil {
+			return Stats{}, err
+		}
+		for _, v := range perCPU {
+			total.RingbufDrops += v.RingbufDrops
+			total.MapUpdateFailures += v.MapUpdateFailures
+			total.UnknownDeviceEvents += v.UnknownDeviceEvents
+			total.AllocFreeMisses += v.AllocFreeMisses
+		}
+	}
+	return Stats{
+		RingbufDrops:        total.RingbufDrops,
+		MapUpdateFailures:   total.MapUpdateFailures,
+		UnknownDeviceEvents: total.UnknownDeviceEvents,
+		AllocFreeMisses:     total.AllocFreeMisses,
+	}, nil
 }
 
 // decodeEvent reads the fixed 64-byte event record.

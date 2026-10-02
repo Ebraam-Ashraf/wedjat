@@ -29,7 +29,7 @@ var stateMaps = []string{"tid_to_device", "ctx_to_device", "alloc_map"}
 
 // defaultPinDir is where the kernel keeps our pinned state, versioned so a
 // layout change uses a new directory instead of reading stale state.
-const defaultPinDir = "/sys/fs/bpf/wedjat/v1"
+const defaultPinDir = "/sys/fs/bpf/wedjat/v2"
 
 // objectDirs are the places the compiled BPF objects may live, most specific
 // first. An installed daemon is started by systemd from /, so a path relative
@@ -105,10 +105,19 @@ func LoadTracer(objectsDir, pinDir, libcudaPath string) (*Tracer, error) {
 		return nil, err
 	}
 
+	// closePinned releases any pinned map fds that were opened but not
+	// consumed by the collection (i.e. on every error path below).
+	closePinned := func() {
+		for _, m := range pinned {
+			m.Close()
+		}
+	}
+
 	collection, err := ebpf.NewCollectionWithOptions(merged, ebpf.CollectionOptions{
 		MapReplacements: pinned,
 	})
 	if err != nil {
+		closePinned()
 		return nil, fmt.Errorf("load eBPF collection: %w", err)
 	}
 
@@ -249,24 +258,40 @@ func (t *Tracer) pinState(pinDir string) {
 	}
 }
 
-// resolveObjectsDir returns the first directory that holds a complete set of
-// BPF objects. A partial set is skipped rather than half loaded, since a missing
-// object means a whole class of events goes untraced with no error.
+// resolveObjectsDir returns the directory that holds a complete set of BPF
+// objects.
+//
+// When configured is non-empty it is the only path tried. If it does not
+// contain a complete set the caller gets a precise error naming that path,
+// rather than silently falling through to the built-in defaults. An operator
+// who set ObjectsDir explicitly expects it to be authoritative.
+//
+// When configured is empty the built-in candidates are tried in order, and a
+// generic "run make bpf" error is returned if none of them work.
 func resolveObjectsDir(configured string) (string, error) {
-	candidates := objectDirs
 	if configured != "" {
-		candidates = append([]string{configured}, objectDirs...)
+		if objectsPresent(configured) {
+			return configured, nil
+		}
+		return "", fmt.Errorf("BPF objects directory %q does not contain a complete object set; expected %s",
+			configured, strings.Join(bpfObjectNames(), ", "))
 	}
 
-	for _, dir := range candidates {
+	for _, dir := range objectDirs {
 		if objectsPresent(dir) {
 			return dir, nil
 		}
 	}
-	if configured != "" {
-		return "", fmt.Errorf("no complete set of BPF objects under %q", configured)
-	}
 	return "", errors.New("no complete set of BPF objects found; run 'make bpf'")
+}
+
+// bpfObjectNames returns the expected .bpf.o filenames for error messages.
+func bpfObjectNames() []string {
+	names := make([]string, len(bpfObjects))
+	for i, name := range bpfObjects {
+		names[i] = name + ".bpf.o"
+	}
+	return names
 }
 
 func objectsPresent(dir string) bool {

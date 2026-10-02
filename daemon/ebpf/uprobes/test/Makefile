@@ -34,10 +34,10 @@ BPF_CFLAGS := -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) -D__bpf__ \
 HAVE_PKG_CONFIG := $(shell command -v pkg-config 2>/dev/null)
 ifdef HAVE_PKG_CONFIG
     CFLAGS := -Wall -Wextra -O1 $(shell pkg-config --cflags libbpf 2>/dev/null)
-    LIBS   := $(shell pkg-config --libs libbpf 2>/dev/null) -lelf -lz
+    LIBS   := $(shell pkg-config --libs libbpf 2>/dev/null) -lelf -lz -ldl
 else
     CFLAGS := -Wall -Wextra -O1
-    LIBS   := -lbpf -lelf -lz
+    LIBS   := -lbpf -lelf -lz -ldl
 endif
 
 .PHONY: all test clean

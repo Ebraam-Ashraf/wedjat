@@ -1,6 +1,7 @@
 package core
 
 import (
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -24,11 +25,13 @@ func BuildSnapshot(gpuUUIDs []string) Snapshot {
 
 	for i, uuid := range gpuUUIDs {
 		if uuid == "" {
+			log.Printf("snapshot: GPU index %d has an empty UUID, skipping", i)
 			continue
 		}
 
 		sample, err := nvml.PollGPU(uuid)
 		if err != nil {
+			log.Printf("snapshot: PollGPU failed for GPU %s: %v", uuid, err)
 			continue
 		}
 		sample.Index = uint(i)
@@ -36,11 +39,10 @@ func BuildSnapshot(gpuUUIDs []string) Snapshot {
 
 		// Get processes for this GPU
 		procs, err := nvml.PollProcesses(uuid)
+		snapshot.Processes = append(snapshot.Processes, procs...)
 		if err != nil {
 			snapshot.ProcessesComplete = false
-			continue
 		}
-		snapshot.Processes = append(snapshot.Processes, procs...)
 	}
 
 	return snapshot

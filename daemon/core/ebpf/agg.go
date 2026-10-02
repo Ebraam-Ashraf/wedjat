@@ -61,22 +61,41 @@ func (t *Tracer) drainAggregates(ctx context.Context, database *db.DB, ids *trac
 	// merged is keyed by (tgid, ordinal) so every API the process used on that
 	// device lands in one row.
 	merged := map[aggregateGroup]db.Aggregate{}
-	unresolved := map[aggregateGroup]aggVal{}
+
+	// unresolvedCount accumulates the event count for groups whose process or
+	// device could not be identified so they can be reported as unattributed.
+	var unresolvedCount uint64
+
+	// resolveCache caches the outcome of process/GPU resolution per group so
+	// we don't retry an impossible lookup once per API row for the same group.
+	type resolvedIDs struct {
+		procID int64
+		gpuID  int64
+		ok     bool
+	}
+	resolveCache := map[aggregateGroup]resolvedIDs{}
 
 	iterator := t.aggMap.Iterate()
 	var key aggKey
 	var perCPU []aggVal
+	var scanErr error
 	for iterator.Next(&key, &perCPU) {
-		// LookupAndDelete is what actually takes the value. Next only needs
-		// somewhere to put the shape of it, so the lookup below is the read
-		// that counts.
+		// LookupAndDelete atomically removes the entry and returns its final
+		// value. Next only provides the key shape; the value from Next is
+		// discarded in favour of the one returned here.
+		//
+		// ErrKeyNotExist means the LRU map evicted this entry between the
+		// iterator snapshot and the delete — the counts are gone and cannot
+		// be recovered. This is distinct from a concurrent writer updating
+		// the entry: LookupAndDelete is atomic, so an update that races us
+		// either lands in this drain (we see it) or the next one (it
+		// survives because the LookupAndDelete finds the updated value).
 		if err := t.aggMap.LookupAndDelete(&key, &perCPU); err != nil {
 			if errors.Is(err, ebpf.ErrKeyNotExist) {
-				// The kernel updated the row between the iteration and the
-				// delete. That counter will be picked up next drain.
 				continue
 			}
-			return fmt.Errorf("drain agg_map: %w", err)
+			scanErr = fmt.Errorf("drain agg_map: %w", err)
+			break
 		}
 
 		value := mergeAgg(perCPU)
@@ -86,43 +105,47 @@ func (t *Tracer) drainAggregates(ctx context.Context, database *db.DB, ids *trac
 		}
 
 		gk := aggregateGroup{tgid: key.Tgid, ordinal: key.DeviceOrdinal}
-		if _, ok := unresolved[gk]; ok {
-			continue
+
+		// Check or populate the resolution cache for this group. Each API
+		// row for the same (tgid, ordinal) group shares one cache entry so
+		// we attempt the /proc lookup at most once per drain per group,
+		// but every API row is still accumulated — even when the group is
+		// unresolvable its counts are added to unresolvedCount below.
+		resolved, cached := resolveCache[gk]
+		if !cached {
+			procID, procErr := ids.processID(ctx, database, key.Tgid)
+			gpuID, gpuOK := ids.gpuID(key.Tgid, key.DeviceOrdinal)
+			if procErr != nil || !gpuOK {
+				resolveCache[gk] = resolvedIDs{ok: false}
+			} else {
+				resolveCache[gk] = resolvedIDs{procID: procID, gpuID: gpuID, ok: true}
+			}
+			resolved = resolveCache[gk]
 		}
 
-		procID, err := ids.processID(ctx, database, key.Tgid)
-		if err != nil {
-			// A process that exited before we could identify it cannot be
-			// attributed. Remember it so the rest of this drain does not retry
-			// the same impossible lookup once per API.
-			unresolved[gk] = value
-			continue
-		}
-		gpuID, ok := ids.gpuID(key.DeviceOrdinal)
-		if !ok {
-			unresolved[gk] = value
+		if !resolved.ok {
+			unresolvedCount += value.Count
 			continue
 		}
 
 		row := merged[gk]
-		row.ProcessID = procID
-		row.GPUID = gpuID
+		row.ProcessID = resolved.procID
+		row.GPUID = resolved.gpuID
 		applyAPI(&row, key.ApiID, value)
 		merged[gk] = row
 	}
 
 	if err := iterator.Err(); err != nil {
-		return fmt.Errorf("iterate agg_map: %w", err)
+		scanErr = errors.Join(scanErr, fmt.Errorf("iterate agg_map: %w", err))
 	}
 
-	for _, value := range unresolved {
-		unattributed.Add(int64(value.Count))
+	if unresolvedCount > 0 {
+		unattributed.Add(int64(unresolvedCount))
 	}
 
-	if len(merged) == 0 {
-		return nil
-	}
-	return database.WriteAggregates(ctx, at, sortedAggregates(merged))
+	t.backlog.Add(at, sortedAggregates(merged))
+	writeErr := t.backlog.Flush(ctx, database.WriteAggregates)
+	return errors.Join(scanErr, writeErr)
 }
 
 // unattributed counts events the kernel recorded but that cannot be attributed

@@ -113,9 +113,18 @@ struct alloc_val {
     u64 bytes;
     u32 device_ordinal;
     u32 pad;
+    u64 start_boottime_ns;
 };
 
 struct process_seen_val {
+    u64 start_boottime_ns;
+};
+
+/* Pinned per-process state carries a generation token because TGIDs are
+ * reused, including while the daemon is down. */
+struct device_binding {
+    u32 device_ordinal;
+    u32 pad;
     u64 start_boottime_ns;
 };
 
@@ -215,19 +224,19 @@ struct {
     __type(value, struct inflight_val);
 } driver_inflight_map SEC(".maps");
 
-/* Pinned state map: key is pid_tgid, value is a CUDA-visible device ordinal. */
+/* Pinned state maps include process start time to reject stale state on PID reuse. */
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 10240);
     __type(key, struct thread_key);
-    __type(value, u32);
+    __type(value, struct device_binding);
 } tid_to_device SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 16384);
     __type(key, u32);
-    __type(value, u32);
+    __type(value, struct device_binding);
 } pid_to_device SEC(".maps");
 
 /* Pinned state map: a context pointer is scoped by its owning process. */
@@ -235,7 +244,7 @@ struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 4096);
     __type(key, struct ctx_key);
-    __type(value, u32);
+    __type(value, struct device_binding);
 } ctx_to_device SEC(".maps");
 
 /* Pinned state map. It is used for alloc/free counters, never VRAM truth. */
@@ -296,31 +305,59 @@ static __always_inline u32 current_device_ordinal(void)
     u64 pid_tgid = bpf_get_current_pid_tgid();
     struct thread_key key = { .pid_tgid = pid_tgid };
     u32 tgid = (u32)(pid_tgid >> 32);
-    u32 *device = bpf_map_lookup_elem(&tid_to_device, &key);
+    struct device_binding *device = bpf_map_lookup_elem(&tid_to_device, &key);
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
+    u64 start_boottime_ns = BPF_CORE_READ(task, start_boottime);
 
-    if (device)
-        return *device;
+    if (device) {
+        if (device->start_boottime_ns == start_boottime_ns)
+            return device->device_ordinal;
+        bpf_map_delete_elem(&tid_to_device, &key);
+    }
     device = bpf_map_lookup_elem(&pid_to_device, &tgid);
-    return device ? *device : WEDJAT_UNKNOWN_DEVICE;
+    if (device) {
+        if (device->start_boottime_ns == start_boottime_ns)
+            return device->device_ordinal;
+        bpf_map_delete_elem(&pid_to_device, &tgid);
+    }
+    return WEDJAT_UNKNOWN_DEVICE;
 }
 
 static __always_inline void init_event(struct event *event, u32 api_id)
 {
     u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 tgid = (u32)(pid_tgid >> 32);
+    struct thread_key tkey = { .pid_tgid = pid_tgid };
+    struct device_binding *tid_dev = bpf_map_lookup_elem(&tid_to_device, &tkey);
 
     __builtin_memset(event, 0, sizeof(*event));
     event->ts_ns = bpf_ktime_get_ns();
-    event->tgid = (u32)(pid_tgid >> 32);
+    event->tgid = tgid;
     event->tid = (u32)pid_tgid;
-    event->device_ordinal = current_device_ordinal();
     event->api_id = api_id;
-    if (event->device_ordinal != WEDJAT_UNKNOWN_DEVICE) {
-        struct thread_key key = { .pid_tgid = pid_tgid };
-        if (!bpf_map_lookup_elem(&tid_to_device, &key))
-            event->flags |= EVENT_F_FROM_PID_FALLBACK;
+
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
+    u64 start_boottime_ns = BPF_CORE_READ(task, start_boottime);
+    if (tid_dev && tid_dev->start_boottime_ns == start_boottime_ns) {
+        event->device_ordinal = tid_dev->device_ordinal;
+    } else {
+        if (tid_dev)
+            bpf_map_delete_elem(&tid_to_device, &tkey);
+        struct device_binding *pid_dev = bpf_map_lookup_elem(&pid_to_device, &tgid);
+        if (pid_dev) {
+            if (pid_dev->start_boottime_ns == start_boottime_ns) {
+                event->device_ordinal = pid_dev->device_ordinal;
+                event->flags |= EVENT_F_FROM_PID_FALLBACK;
+            } else {
+                bpf_map_delete_elem(&pid_to_device, &tgid);
+                event->device_ordinal = WEDJAT_UNKNOWN_DEVICE;
+                event->flags |= EVENT_F_DEVICE_UNKNOWN;
+            }
+        } else {
+            event->device_ordinal = WEDJAT_UNKNOWN_DEVICE;
+            event->flags |= EVENT_F_DEVICE_UNKNOWN;
+        }
     }
-    if (event->device_ordinal == WEDJAT_UNKNOWN_DEVICE)
-        event->flags |= EVENT_F_DEVICE_UNKNOWN;
 }
 
 static __always_inline void stats_add(u32 api_id, enum stat_id stat_id)
@@ -345,21 +382,25 @@ static __always_inline void mark_gpu_process(u32 tgid)
     struct task_struct *task;
     struct process_seen_val value = {};
 
+    /* BPF_NOEXIST makes the insert atomic — no separate lookup needed. */
     if (bpf_map_lookup_elem(&seen_processes, &tgid))
         return;
     task = (struct task_struct *)bpf_get_current_task_btf();
     value.start_boottime_ns = BPF_CORE_READ(task, start_boottime);
-    if (bpf_map_update_elem(&seen_processes, &tgid, &value, BPF_ANY) != 0)
-        stats_add(0, STAT_MAP_UPDATE_FAILURE);
+    if (bpf_map_update_elem(&seen_processes, &tgid, &value, BPF_NOEXIST) != 0) {
+        /* EEXIST just means another CPU raced us — not an error. */
+        if (!bpf_map_lookup_elem(&seen_processes, &tgid))
+            stats_add(0, STAT_MAP_UPDATE_FAILURE);
+    }
 }
 
 static __always_inline int submit_event(struct event *event)
 {
+    /* EVENT_F_DEVICE_UNKNOWN is already set by init_event when appropriate.
+     * Proc lifecycle events are exempt — they intentionally have no device. */
     if (event->device_ordinal == WEDJAT_UNKNOWN_DEVICE &&
-        event->api_id != EVENT_PROC_EXEC && event->api_id != EVENT_PROC_EXIT) {
-        event->flags |= EVENT_F_DEVICE_UNKNOWN;
+        event->api_id != EVENT_PROC_EXEC && event->api_id != EVENT_PROC_EXIT)
         stats_add(event->api_id, STAT_UNKNOWN_DEVICE);
-    }
     mark_gpu_process(event->tgid);
     if (bpf_ringbuf_output(&events_pipe, event, sizeof(*event), 0) != 0) {
         stats_add(event->api_id, STAT_RINGBUF_DROP);
@@ -388,11 +429,12 @@ static __always_inline int record_aggregate(struct event *event)
     }
     if (event->device_ordinal == WEDJAT_UNKNOWN_DEVICE)
         stats_add(event->api_id, STAT_UNKNOWN_DEVICE);
-    if (bpf_map_update_elem(&agg_map, &key, &initial, BPF_NOEXIST) != 0 &&
-        !bpf_map_lookup_elem(&agg_map, &key)) {
-        stats_add(event->api_id, STAT_MAP_UPDATE_FAILURE);
-        return 0;
-    }
+
+    /* Try inserting a zero-initialised slot. If the key already exists the
+     * update returns an error, which is the normal hot path — ignore it and
+     * fall through to the lookup below. Only treat it as a real failure if
+     * the subsequent lookup also finds nothing (map full). */
+    bpf_map_update_elem(&agg_map, &key, &initial, BPF_NOEXIST);
     value = bpf_map_lookup_elem(&agg_map, &key);
     if (!value) {
         stats_add(event->api_id, STAT_MAP_UPDATE_FAILURE);

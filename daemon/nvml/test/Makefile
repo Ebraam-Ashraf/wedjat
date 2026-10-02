@@ -6,21 +6,21 @@ KERNELS_BUILD := $(KERNELS_DIR)/build
 NVML_SRC_DIR  := ..
 
 CC     := gcc
-CFLAGS := -Wall -Wextra -O1
+CFLAGS := -Wall -Wextra -O1 -pthread
 
 # Auto-detect CUDA Toolkit — prefer versioned path if /usr/local/cuda symlink is missing.
 CUDA_HOME ?= $(firstword $(wildcard /usr/local/cuda /usr/local/cuda-*))
 ifeq ($(CUDA_HOME),)
     $(error CUDA Toolkit not found. Set CUDA_HOME=/path/to/cuda)
 endif
-NVML_INCLUDE := $(CUDA_HOME)/targets/x86_64-linux/include
+NVML_INCLUDE := $(CUDA_HOME)/targets/$(shell uname -m)-linux/include
 ifeq ($(wildcard $(NVML_INCLUDE)/nvml.h),)
     NVML_INCLUDE := $(CUDA_HOME)/include
 endif
 NVML_CFLAGS := -I$(NVML_INCLUDE) -Wno-deprecated-declarations
 
-NVML_LIB_DIR ?= /usr/lib/x86_64-linux-gnu
-NVML_LIBS    := -L$(NVML_LIB_DIR) -lnvidia-ml
+NVML_LIB_DIR ?=
+NVML_LIBS    := $(if $(NVML_LIB_DIR),-L$(NVML_LIB_DIR)) -lnvidia-ml -ldl
 
 BUILD := build
 
@@ -36,10 +36,10 @@ $(BUILD)/.d:
 	@touch $@
 
 $(BUILD)/poller_test: poller_test.c $(NVML_SRC_DIR)/poller.c $(NVML_SRC_DIR)/poller.h | $(BUILD)/.d
-	$(CC) $(CFLAGS) $(NVML_CFLAGS) -Wl,--wrap=nvmlDeviceGetPowerUsage -o $@ poller_test.c $(NVML_SRC_DIR)/poller.c $(NVML_LIBS)
+	$(CC) $(CFLAGS) -DWEDJAT_NVML_TEST $(NVML_CFLAGS) -o $@ poller_test.c $(NVML_SRC_DIR)/poller.c $(NVML_LIBS)
 
-$(BUILD)/xid_test: xid_test.c $(NVML_SRC_DIR)/xid.c $(NVML_SRC_DIR)/xid.h | $(BUILD)/.d
-	$(CC) $(CFLAGS) $(NVML_CFLAGS) -o $@ xid_test.c $(NVML_SRC_DIR)/xid.c $(NVML_LIBS)
+$(BUILD)/xid_test: xid_test.c $(NVML_SRC_DIR)/xid.c $(NVML_SRC_DIR)/xid.h $(NVML_SRC_DIR)/poller.c $(NVML_SRC_DIR)/poller.h | $(BUILD)/.d
+	$(CC) $(CFLAGS) $(NVML_CFLAGS) -o $@ xid_test.c $(NVML_SRC_DIR)/xid.c $(NVML_SRC_DIR)/poller.c $(NVML_LIBS)
 
 build: $(BUILD)/poller_test $(BUILD)/xid_test
 

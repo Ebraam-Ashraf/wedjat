@@ -12,15 +12,6 @@ static __always_inline int record_cuda(u32 api_id, u64 address, u64 bytes,
     event.bytes = bytes;
     event.latency_ns = latency_ns;
     event.status = status;
-
-    if (api_id == EVENT_ALLOC && status != 0) {
-        u32 zero = 0;
-        struct config_val *config = bpf_map_lookup_elem(&config_map, &zero);
-        record_aggregate(&event);
-        if (!config || !(config->flags & CONFIG_F_RAW_CAPTURE))
-            submit_event(&event);
-        return 0;
-    }
     return record_aggregate(&event);
 }
 
@@ -43,17 +34,24 @@ static __always_inline int begin_cuda_call(u32 api_id, u64 arg1, u64 arg2)
 static __always_inline int finish_cuda_call(u32 api_id, long ret)
 {
     u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
+    u64 process_start = BPF_CORE_READ(task, start_boottime);
     struct inflight_key key = make_inflight_key(pid_tgid, api_id);
     struct inflight_val *value = bpf_map_lookup_elem(&cuda_inflight_map, &key);
     u64 now = bpf_ktime_get_ns();
-    u64 latency = value ? now - value->start_ts_ns : 0;
     u64 address = 0;
-    u64 bytes = (api_id == EVENT_ALLOC && value) ? value->arg1 : 0;
-    u32 device = value ? value->device_ordinal : current_device_ordinal();
-    u64 call_arg1 = value ? value->arg1 : 0;
+    u64 bytes, latency;
+    u32 device;
+    u64 call_arg1;
 
     if (!value)
         return 0;
+
+    latency = now - value->start_ts_ns;
+    bytes = (api_id == EVENT_ALLOC) ? value->arg1 : 0;
+    device = value->device_ordinal;
+    call_arg1 = value->arg1;
+
     if (api_id == EVENT_ALLOC && ret == 0) {
         struct alloc_key alloc_key = {
             .tgid = (u32)(pid_tgid >> 32),
@@ -63,6 +61,7 @@ static __always_inline int finish_cuda_call(u32 api_id, long ret)
             struct alloc_val alloc_value = {
                 .bytes = bytes,
                 .device_ordinal = device,
+                .start_boottime_ns = process_start,
             };
             alloc_key.address = address;
             if (bpf_map_update_elem(&alloc_map, &alloc_key, &alloc_value, BPF_ANY) != 0)
@@ -74,25 +73,30 @@ static __always_inline int finish_cuda_call(u32 api_id, long ret)
             .address = call_arg1,
         };
         struct alloc_val *alloc_value = bpf_map_lookup_elem(&alloc_map, &alloc_key);
-        if (alloc_value) {
+        if (alloc_value && alloc_value->start_boottime_ns == process_start) {
             bytes = alloc_value->bytes;
             device = alloc_value->device_ordinal;
             bpf_map_delete_elem(&alloc_map, &alloc_key);
         } else {
+            if (alloc_value)
+                bpf_map_delete_elem(&alloc_map, &alloc_key);
             stats_add(EVENT_FREE, STAT_ALLOC_FREE_MISS);
         }
         address = call_arg1;
     }
     bpf_map_delete_elem(&cuda_inflight_map, &key);
 
-    if (api_id == EVENT_ALLOC && ret != 0)
-        return record_cuda(api_id, 0, bytes, latency, (s32)ret);
-    if (api_id == EVENT_FREE && ret != 0)
-        return record_cuda(api_id, call_arg1, 0, latency, (s32)ret);
-
+    /* Use the device ordinal captured at call entry, not a fresh lookup.
+     * By this point the thread may have switched context. */
     struct event event = {};
     init_event(&event, api_id);
     event.device_ordinal = device;
+    /* Preserve the unknown-device flag from init_event if the saved ordinal
+     * happens to be WEDJAT_UNKNOWN_DEVICE. */
+    if (device == WEDJAT_UNKNOWN_DEVICE)
+        event.flags |= EVENT_F_DEVICE_UNKNOWN;
+    else
+        event.flags &= ~EVENT_F_DEVICE_UNKNOWN;
     event.address = address;
     event.bytes = bytes;
     event.latency_ns = latency;
@@ -122,7 +126,7 @@ int BPF_KRETPROBE(trace_##name##_ret, long ret) \
 { return finish_cuda_call(EVENT_ALLOC, ret); }
 
 ALLOC_PROBES(cuMemAlloc_v2, "cuMemAlloc_v2", u64)
-ALLOC_PROBES(cuMemAlloc, "cuMemAlloc", u32)
+ALLOC_PROBES(cuMemAlloc, "cuMemAlloc", u64)
 ALLOC_PROBES(cuMemAllocManaged, "cuMemAllocManaged", u64)
 ALLOC_PROBES(cuMemAllocAsync, "cuMemAllocAsync", u64)
 #undef ALLOC_PROBES

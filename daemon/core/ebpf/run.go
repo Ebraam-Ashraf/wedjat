@@ -103,6 +103,7 @@ func StartTracer(ctx context.Context, database *db.DB, bootID string, devices []
 // GPU. Without this every aggregate would be unattributable, so it is done once
 // at startup rather than per event.
 func (s *TracerSession) bindDevices(ctx context.Context, database *db.DB, devices []nvml.DeviceInfo) error {
+	identities := make([]gpuIdentity, 0, len(devices))
 	for _, device := range devices {
 		if device.UUID == "" {
 			continue
@@ -111,8 +112,9 @@ func (s *TracerSession) bindDevices(ctx context.Context, database *db.DB, device
 		if err != nil {
 			return fmt.Errorf("resolve GPU %s: %w", device.UUID, err)
 		}
-		s.ids.setOrdinal(uint32(device.Index), gpuID)
+		identities = append(identities, gpuIdentity{device: device, id: gpuID})
 	}
+	s.ids.setDevices(identities)
 	return nil
 }
 

@@ -275,7 +275,7 @@ const processVRAMUpsert = "INSERT INTO proc_gpu (proc_id, gpu_id, first_seen_ts,
 const gpuSampleUpsert = `INSERT INTO gpu_samples (
 	ts, gpu_id, n, util_gpu_sum, util_gpu_max, util_mem_sum,
 	temp_max, power_mw_sum, vram_used_max,
-	sm_clock_min, mem_clock_min, power_limit_mw, throttle_or, ecc_errors
+	sm_clock_max, mem_clock_max, power_limit_mw, throttle_or, ecc_errors
 ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(ts, gpu_id) DO UPDATE SET
 	n = gpu_samples.n + 1,
@@ -297,12 +297,12 @@ ON CONFLICT(ts, gpu_id) DO UPDATE SET
 	vram_used_max = CASE WHEN excluded.vram_used_max IS NULL THEN gpu_samples.vram_used_max
 		WHEN gpu_samples.vram_used_max IS NULL THEN excluded.vram_used_max
 		ELSE MAX(gpu_samples.vram_used_max, excluded.vram_used_max) END,
-	sm_clock_min = CASE WHEN excluded.sm_clock_min IS NULL THEN gpu_samples.sm_clock_min
-		WHEN gpu_samples.sm_clock_min IS NULL THEN excluded.sm_clock_min
-		ELSE MIN(gpu_samples.sm_clock_min, excluded.sm_clock_min) END,
-	mem_clock_min = CASE WHEN excluded.mem_clock_min IS NULL THEN gpu_samples.mem_clock_min
-		WHEN gpu_samples.mem_clock_min IS NULL THEN excluded.mem_clock_min
-		ELSE MIN(gpu_samples.mem_clock_min, excluded.mem_clock_min) END,
+	sm_clock_max = CASE WHEN excluded.sm_clock_max IS NULL THEN gpu_samples.sm_clock_max
+		WHEN gpu_samples.sm_clock_max IS NULL THEN excluded.sm_clock_max
+		ELSE MAX(gpu_samples.sm_clock_max, excluded.sm_clock_max) END,
+	mem_clock_max = CASE WHEN excluded.mem_clock_max IS NULL THEN gpu_samples.mem_clock_max
+		WHEN gpu_samples.mem_clock_max IS NULL THEN excluded.mem_clock_max
+		ELSE MAX(gpu_samples.mem_clock_max, excluded.mem_clock_max) END,
 	power_limit_mw = COALESCE(excluded.power_limit_mw, gpu_samples.power_limit_mw),
 	throttle_or = CASE WHEN excluded.throttle_or IS NULL THEN gpu_samples.throttle_or
 		WHEN gpu_samples.throttle_or IS NULL THEN excluded.throttle_or

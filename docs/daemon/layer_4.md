@@ -61,7 +61,7 @@ The macro-level physical metrics eBPF can't reach from CPU memory alone:
 
 ## 3. Execution Pattern: Poller + Blocking Listener
 
-Because NVML gives you two different shapes of data — **polled values** (clocks, power, temperature, all answered on demand) and **blocking event notifications** (Xid errors, which fire whenever they fire) — `wedjatd` splits Layer 4 across two concurrent background threads: one on a 1-second ticker, one parked in a blocking wait. Two drafts of this pattern were sketched; both are kept here since the second tightens the wording without changing the mechanics.
+The current daemon polls NVML from its main loop and records GPU and process snapshots through `daemon/core/nvml` and `daemon/core`. Xid event listening remains design work; the C poller and listener examples later in this document are historical drafts, not the current runtime implementation.
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
@@ -200,7 +200,7 @@ Process: vllm (PID 9107, Pod: kubeflow/vllm-worker-2)
 
 Both files below are the pure-C/pthread draft of Layer 4 (see the note in §5 on reconciling this with the Go directory layout).
 
-### 7.1 `daemon/nvml/poller.c` — the 1-second ticker
+### 7.1 `nvml/poller.c` — historical C draft
 
 Runs in a background POSIX thread, querying whole-device metrics and enabling per-process accounting (`nvmlAccountingStats_t`).
 
@@ -296,7 +296,7 @@ void* nvml_poller_thread(void* arg) {
 }
 ```
 
-### 7.2 `daemon/nvml/xid.c` — the blocking Xid listener
+### 7.2 `nvml/xid.c` — historical C draft
 
 Runs in its own background thread; `nvmlEventSetWait()` blocks until a hardware fault physically occurs, so it can never stall the 1-second poller above.
 

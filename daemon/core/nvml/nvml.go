@@ -1,8 +1,8 @@
 package nvml
 
 /*
-#cgo CFLAGS: -I../../nvml -I../../ebpf -I../../ebpf/build -I/usr/local/cuda/include -I/usr/local/cuda/targets/x86_64-linux/include -Wno-deprecated-declarations
-#cgo LDFLAGS: -L/usr/lib/x86_64-linux-gnu -lnvidia-ml
+#cgo CFLAGS: -I../../nvml -I../../ebpf -I../../ebpf/build -I/usr/local/cuda/include -Wno-deprecated-declarations -pthread
+#cgo LDFLAGS: -ldl -pthread
 
 #include "bridge.h"
 #include <stdlib.h>
@@ -84,9 +84,10 @@ func ShutdownSources() {
 
 // GetDeviceCount returns the number of NVIDIA GPUs.
 func GetDeviceCount() (int, error) {
-	count := C.collector_device_count()
+	var nvmlError C.int
+	count := C.collector_device_count(&nvmlError)
 	if count < 0 {
-		return 0, fmt.Errorf("failed to get device count")
+		return 0, fmt.Errorf("failed to get device count (NVML error %d)", int(nvmlError))
 	}
 	return int(count), nil
 }
@@ -95,10 +96,11 @@ func GetDeviceCount() (int, error) {
 func GetDeviceUUID(index uint) (string, error) {
 	buf := make([]byte, 96)
 	cBuf := (*C.char)(unsafe.Pointer(&buf[0]))
+	var nvmlError C.int
 
-	rc := C.collector_device_uuid(C.uint(index), cBuf)
+	rc := C.collector_device_uuid(C.uint(index), cBuf, &nvmlError)
 	if rc != 0 {
-		return "", fmt.Errorf("failed to get UUID for device %d", index)
+		return "", fmt.Errorf("failed to get UUID for device %d (NVML error %d)", index, int(nvmlError))
 	}
 
 	return C.GoString(cBuf), nil
@@ -129,7 +131,8 @@ func GetDeviceInfo(index uint) (DeviceInfo, error) {
 	var info C.struct_collector_device_info
 
 	if rc := C.collector_device_info(C.uint(index), &info); rc != 0 {
-		return DeviceInfo{}, fmt.Errorf("failed to get info for device %d", index)
+		return DeviceInfo{}, fmt.Errorf("failed to get info for device %d (NVML error %d)",
+			index, int(info.nvml_error))
 	}
 
 	return DeviceInfo{
@@ -152,7 +155,8 @@ func PollGPU(uuid string) (GPUSample, error) {
 	C.collector_snapshot_gpu(cUUID, &snap)
 
 	if snap.ok == 0 {
-		return GPUSample{}, fmt.Errorf("GPU snapshot failed for %s", uuid)
+		return GPUSample{}, fmt.Errorf("GPU snapshot failed for %s (NVML error %d)",
+			uuid, int(snap.nvml_error))
 	}
 
 	return GPUSample{
@@ -181,7 +185,8 @@ func PollProcesses(uuid string) ([]ProcessSample, error) {
 	C.collector_snapshot_procs(cUUID, &list)
 
 	if list.ok == 0 {
-		return nil, fmt.Errorf("process snapshot failed for %s", uuid)
+		return nil, fmt.Errorf("process snapshot failed for %s (NVML error %d; compute=%d graphics=%d mps=%d)",
+			uuid, int(list.nvml_error), int(list.compute_error), int(list.graphics_error), int(list.mps_error))
 	}
 
 	procs := make([]ProcessSample, 0, int(list.count))
@@ -195,5 +200,10 @@ func PollProcesses(uuid string) ([]ProcessSample, error) {
 		})
 	}
 
+	if list.complete == 0 {
+		return procs, fmt.Errorf("process snapshot incomplete for %s (NVML error %d; compute=%d graphics=%d mps=%d; truncated=%t)",
+			uuid, int(list.nvml_error), int(list.compute_error), int(list.graphics_error), int(list.mps_error),
+			list.truncated != 0)
+	}
 	return procs, nil
 }

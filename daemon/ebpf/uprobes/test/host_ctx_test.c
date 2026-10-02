@@ -24,9 +24,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <dlfcn.h>
 #include <dirent.h>
 #include <unistd.h>
 #include <errno.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <linux/types.h>
 #include <bpf/libbpf.h>
@@ -72,6 +75,85 @@ static void release_child(int go_fd)
 {
     if (write(go_fd, "x", 1) != 1) perror("write");
     close(go_fd);
+}
+
+static int test_untracked_context_clears_binding(struct host_ctx_bpf *skel,
+                                                  const char *lib)
+{
+    if (!skel->links.trace_cuDevicePrimaryCtxRetain ||
+        !skel->links.trace_cuCtxSetCurrent) {
+        printf("SKIP: context binding hooks unavailable\n");
+        return PASS;
+    }
+
+    void *handle = dlopen(lib, RTLD_NOW | RTLD_LOCAL);
+    if (!handle) {
+        printf("FAIL: dlopen %s: %s\n", lib, dlerror());
+        return FAIL;
+    }
+    int (*cuInit)(unsigned int) = dlsym(handle, "cuInit");
+    int (*cuDeviceGet)(int *, int) = dlsym(handle, "cuDeviceGet");
+    int (*cuDevicePrimaryCtxRetain)(void **, int) =
+        dlsym(handle, "cuDevicePrimaryCtxRetain");
+    int (*cuCtxSetCurrent)(void *) = dlsym(handle, "cuCtxSetCurrent");
+    if (!cuInit || !cuDeviceGet || !cuDevicePrimaryCtxRetain || !cuCtxSetCurrent) {
+        printf("SKIP: required CUDA driver API symbols unavailable\n");
+        dlclose(handle);
+        return PASS;
+    }
+
+    int device = 0;
+    void *context = NULL;
+    if (cuInit(0) != 0 || cuDeviceGet(&device, 0) != 0 ||
+        cuDevicePrimaryCtxRetain(&context, device) != 0 || !context ||
+        cuCtxSetCurrent(context) != 0) {
+        printf("FAIL: could not establish a tracked CUDA context\n");
+        dlclose(handle);
+        return FAIL;
+    }
+
+    struct thread_key key = {
+        .pid_tgid = ((u64)(u32)getpid() << 32) | (u32)syscall(SYS_gettid),
+    };
+    struct device_binding binding = {};
+    int map_fd = bpf_map__fd(skel->maps.tid_to_device);
+    if (bpf_map_lookup_elem(map_fd, &key, &binding) != 0 ||
+        !binding.start_boottime_ns) {
+        printf("FAIL: tracked context did not bind the current process\n");
+        dlclose(handle);
+        return FAIL;
+    }
+
+    /* Simulate a pinned context value left by an earlier process generation
+     * that reused this PID and context address. It must not restore a binding. */
+    struct ctx_key context_key = {
+        .tgid = (u32)getpid(),
+        .ctx = (u64)(uintptr_t)context,
+    };
+    struct device_binding stale = {
+        .device_ordinal = binding.device_ordinal,
+        .start_boottime_ns = binding.start_boottime_ns + 1,
+    };
+    int contexts_fd = bpf_map__fd(skel->maps.ctx_to_device);
+    if (bpf_map_update_elem(contexts_fd, &context_key, &stale, BPF_ANY) != 0 ||
+        cuCtxSetCurrent(context) != 0 ||
+        bpf_map_lookup_elem(map_fd, &key, &binding) == 0) {
+        printf("FAIL: stale context generation restored a device binding\n");
+        dlclose(handle);
+        return FAIL;
+    }
+
+    /* Entry probes run even though this deliberately invalid context is
+     * rejected by CUDA. The thread must not keep the previous GPU binding. */
+    (void)cuCtxSetCurrent((void *)(uintptr_t)0xdeadbeef);
+    if (bpf_map_lookup_elem(map_fd, &key, &binding) == 0) {
+        printf("FAIL: untracked context retained ordinal %u\n", binding.device_ordinal);
+        dlclose(handle);
+        return FAIL;
+    }
+    printf("PASS: untracked context clears stale thread binding\n");
+    dlclose(handle);
+    return PASS;
 }
 
 /* Scan dir for executable files starting with 'k' and no dot in the name. */
@@ -169,6 +251,11 @@ int main(int argc, char **argv)
         return SKIP;
     }
 
+    if (test_untracked_context_clears_binding(skel, lib) != PASS) {
+        host_ctx_bpf__destroy(skel);
+        return FAIL;
+    }
+
     /* 4. loop kernels */
     char *kpaths[64];
     int   nk = scan_kernels(dir, kpaths, 64);
@@ -200,11 +287,11 @@ int main(int argc, char **argv)
          * The BPF program removes the TID when the context is destroyed on exit,
          * so we must catch it while it's still alive. */
         struct thread_key tid = { .pid_tgid = ((u64)(u32)pid << 32) | (u32)pid };
-        u32 dev = 0xffffffff;
+        struct device_binding binding = { .device_ordinal = 0xffffffff };
         int found = 0;
 
         while (1) {
-            if (bpf_map_lookup_elem(ctx_fd, &tid, &dev) == 0) {
+            if (bpf_map_lookup_elem(ctx_fd, &tid, &binding) == 0) {
                 found = 1;
                 break;
             }
@@ -223,7 +310,7 @@ int main(int argc, char **argv)
 
         printf("  %-10s  %-9s  %-6u  ", kname,
                found ? "yes" : "no",
-               found ? dev : 0xffffffff);
+               found ? binding.device_ordinal : 0xffffffff);
 
         if (!found) {
             printf("FAIL(no entry in tid_to_device)\n");

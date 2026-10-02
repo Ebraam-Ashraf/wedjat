@@ -12,15 +12,7 @@
 #define FAIL 1
 #define SKIP 77
 
-static int fail_power_query;
-
-nvmlReturn_t __real_nvmlDeviceGetPowerUsage(nvmlDevice_t device, unsigned int *power);
-nvmlReturn_t __wrap_nvmlDeviceGetPowerUsage(nvmlDevice_t device, unsigned int *power)
-{
-    if (fail_power_query)
-        return NVML_ERROR_NOT_SUPPORTED;
-    return __real_nvmlDeviceGetPowerUsage(device, power);
-}
+int poller_test_fail_power_query;
 
 #define ASSERT_TRUE(cond, msg) do { \
     if (!(cond)) { \
@@ -124,9 +116,9 @@ static int test_device_snapshots(unsigned int count)
 static int test_failed_field(const char *uuid)
 {
     struct device_snapshot snapshot;
-    fail_power_query = 1;
+    poller_test_fail_power_query = 1;
     poller_snapshot_device_uuid(uuid, &snapshot);
-    fail_power_query = 0;
+    poller_test_fail_power_query = 0;
     ASSERT_TRUE(snapshot.valid, "one failed field must not invalidate the entire sample");
     ASSERT_TRUE(!(snapshot.valid_fields & DEVICE_VALID_POWER),
                 "failed power query must leave the power field unavailable");

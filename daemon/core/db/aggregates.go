@@ -156,7 +156,13 @@ func (db *DB) WriteIncident(ctx context.Context, incident Incident) (int64, erro
 
 	// Fold into the existing row when one is still recent, so a repeating
 	// problem is one incident with a rising occurrence count.
+	//
+	// The window is anchored on time.Now() rather than incident.LastTS so
+	// that out-of-order or future-timestamped events cannot extend a closed
+	// incident indefinitely, and a wall-clock jump cannot cause incidents
+	// that should be distinct to collapse into one.
 	const dedupeWindowSeconds = 60
+	windowStart := time.Now().Unix() - dedupeWindowSeconds
 
 	var incidentID int64
 	err := db.meta.QueryRowContext(ctx,
@@ -168,7 +174,7 @@ func (db *DB) WriteIncident(ctx context.Context, incident Incident) (int64, erro
 		    AND last_ts >= ?
 		 RETURNING incident_id`,
 		incident.LastTS, incident.Summary, incident.DedupeKey,
-		incident.LastTS-dedupeWindowSeconds).Scan(&incidentID)
+		windowStart).Scan(&incidentID)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := db.meta.QueryRowContext(ctx,

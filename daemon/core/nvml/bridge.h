@@ -10,10 +10,10 @@ void collector_shutdown(void);
 
 /* ── Device Discovery ─────────────────────────────────────────────── */
 
-int  collector_device_count(void);
+int  collector_device_count(int *nvml_error);
 
 /* Fills uuid_out (must be ≥96 bytes). Returns 0 on success. */
-int  collector_device_uuid(unsigned int index, char *uuid_out);
+int  collector_device_uuid(unsigned int index, char *uuid_out, int *nvml_error);
 
 /* ── Static Device Metadata ────────────────────────────────────────────
  * Read once at startup. Fields are stable for the lifetime of a boot, so
@@ -33,6 +33,7 @@ struct collector_device_info {
     char driver_version[WEDJAT_DRIVER_VERSION_LEN];
     unsigned long long vram_total_bytes;
     int vram_valid;
+    int nvml_error;
 };
 
 /* Populates info for the given device index. Returns 0 on success. */
@@ -53,6 +54,7 @@ struct collector_gpu_snap {
     unsigned long long ecc_errors;   /* uncorrected volatile */
     uint64_t valid_fields;
     int      ok;
+    int      nvml_error;
 };
 
 /* Populates snap for the given UUID. */
@@ -70,6 +72,12 @@ struct collector_proc_list {
     unsigned int count;
     struct collector_proc_entry entries[256]; /* hard cap */
     int ok;
+    int complete;
+    int truncated; /* 1 if more than 256 processes were running */
+    int nvml_error;
+    int compute_error;
+    int graphics_error;
+    int mps_error;
 };
 
 void collector_snapshot_procs(const char *uuid, struct collector_proc_list *list);

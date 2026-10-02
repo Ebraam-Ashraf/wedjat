@@ -6,12 +6,7 @@
  *    inside this single cgo translation unit. ──────────────────── */
 
 #include "../nvml/poller.c"
-
-/* xid.c has a static keep_first_error with a different signature;
-   rename it to avoid the collision with poller.c's version. */
-#define keep_first_error xid_keep_first_error
 #include "../nvml/xid.c"
-#undef keep_first_error
 
 /* ── Lifecycle ────────────────────────────────────────────────────── */
 
@@ -30,17 +25,23 @@ void collector_shutdown(void) {
 
 /* ── Device Discovery ─────────────────────────────────────────────── */
 
-int collector_device_count(void) {
+int collector_device_count(int *nvml_error) {
+    if (!nvml_error)
+        return -1;
     unsigned int count = 0;
     nvmlReturn_t res = poller_device_count(&count);
+    *nvml_error = res;
     if (res != NVML_SUCCESS)
         return -1;
     return (int)count;
 }
 
-int collector_device_uuid(unsigned int index, char *uuid_out) {
+int collector_device_uuid(unsigned int index, char *uuid_out, int *nvml_error) {
+    if (!uuid_out || !nvml_error)
+        return -1;
     struct device_metadata meta;
     poller_device_metadata(index, &meta);
+    *nvml_error = meta.nvml_error;
     if (!(meta.valid_fields & DEVICE_META_UUID))
         return -1;
     snprintf(uuid_out, 96, "%s", meta.uuid);
@@ -48,6 +49,9 @@ int collector_device_uuid(unsigned int index, char *uuid_out) {
 }
 
 int collector_device_info(unsigned int index, struct collector_device_info *info) {
+    if (!info)
+        return -1;
+
     struct device_metadata meta;
     struct device_snapshot ds;
 
@@ -55,6 +59,7 @@ int collector_device_info(unsigned int index, struct collector_device_info *info
     info->index = index;
 
     poller_device_metadata(index, &meta);
+    info->nvml_error = meta.nvml_error;
     if (!(meta.valid_fields & DEVICE_META_UUID))
         return -1;
 
@@ -70,6 +75,8 @@ int collector_device_info(unsigned int index, struct collector_device_info *info
 
     /* VRAM total comes from the snapshot path, not the metadata path. */
     poller_snapshot_device_uuid(info->uuid, &ds);
+    if (info->nvml_error == NVML_SUCCESS)
+        info->nvml_error = ds.nvml_error;
     if (ds.valid && (ds.valid_fields & DEVICE_VALID_MEM_TOTAL)) {
         info->vram_total_bytes = ds.mem_total;
         info->vram_valid = 1;
@@ -85,6 +92,7 @@ void collector_snapshot_gpu(const char *uuid, struct collector_gpu_snap *snap) {
 
     memset(snap, 0, sizeof(*snap));
     poller_snapshot_device_uuid(uuid, &ds);
+    snap->nvml_error = ds.nvml_error;
     if (!ds.valid) {
         snap->ok = 0;
         return;
@@ -123,13 +131,28 @@ void collector_snapshot_procs(const char *uuid, struct collector_proc_list *list
     poller_snapshot_processes_uuid(uuid, &ps);
     if (!ps.valid) {
         list->ok = 0;
+        list->nvml_error = ps.nvml_error;
+        list->compute_error = ps.compute_error;
+        list->graphics_error = ps.graphics_error;
+        list->mps_error = ps.mps_error;
+        /* poller_snapshot_processes_uuid already freed ps.entries when
+         * ps.valid is false, so calling poller_process_snapshot_destroy
+         * here would be a double-free. Only destroy when valid == 1. */
         return;
     }
     list->ok = 1;
+    list->complete = ps.complete;
+    list->nvml_error = ps.nvml_error;
+    list->compute_error = ps.compute_error;
+    list->graphics_error = ps.graphics_error;
+    list->mps_error = ps.mps_error;
 
     unsigned int cap = ps.count;
-    if (cap > 256)
+    if (cap > 256) {
         cap = 256;
+        list->truncated = 1;
+        list->complete = 0;
+    }
     list->count = cap;
 
     for (unsigned int i = 0; i < cap; i++) {

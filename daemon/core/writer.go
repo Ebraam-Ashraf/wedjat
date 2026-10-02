@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 func RegisterDevices(ctx context.Context, database *db.DB, devices []nvml.DeviceInfo) error {
 	for _, device := range devices {
 		if device.UUID == "" {
+			log.Printf("RegisterDevices: device at index %d has an empty UUID, skipping (driver anomaly)", device.Index)
 			continue
 		}
 
@@ -99,6 +101,11 @@ func Record(ctx context.Context, database *db.DB, bootID string, snapshot Snapsh
 // stay open forever and look like it were still running.
 func recordProcesses(ctx context.Context, database *db.DB, bootID string, at time.Time, snapshot Snapshot) error {
 	if len(snapshot.Processes) == 0 && !snapshot.ProcessesComplete {
+		// Both conditions must be true: an empty list that is also incomplete
+		// means at least one device failed its poll entirely. There is nothing
+		// to upsert, and nothing safe to close, so skip the sweep entirely.
+		// (An empty list that IS complete is valid — all processes have exited —
+		// and falls through so CloseProcessesNotSeen still runs the sweep.)
 		return nil
 	}
 
@@ -164,6 +171,13 @@ func recordProcesses(ctx context.Context, database *db.DB, bootID string, at tim
 //
 // Start ticks are what make a process row unique: the kernel recycles PIDs, so
 // the same TGID can belong to unrelated processes over a daemon's lifetime.
+//
+// Field layout follows proc(5): the comm field (field 2) is parenthesised and
+// may itself contain spaces and parentheses, so all field positions are counted
+// from the character after the closing parenthesis. starttime is field 22, which
+// sits at index 19 in the post-comm slice (22 - 3 = 19, because the slice
+// starts at field 3). See proc(5) § /proc/[pid]/stat for the authoritative
+// field numbering.
 func ReadProcessIdentity(pid uint) (int64, string, error) {
 	data, err := os.ReadFile("/proc/" + strconv.FormatUint(uint64(pid), 10) + "/stat")
 	if err != nil {
@@ -171,8 +185,8 @@ func ReadProcessIdentity(pid uint) (int64, string, error) {
 	}
 
 	stat := string(data)
-	// The command name is parenthesised and may itself contain spaces and
-	// parentheses, so fields are counted from after its closing parenthesis.
+	// comm (field 2) is parenthesised and may contain spaces and parentheses
+	// itself, so all subsequent fields are counted from after its closing ')'.
 	open := strings.IndexByte(stat, '(')
 	closing := strings.LastIndexByte(stat, ')')
 	if open < 0 || closing < open {
@@ -181,7 +195,8 @@ func ReadProcessIdentity(pid uint) (int64, string, error) {
 
 	command := stat[open+1 : closing]
 	fields := strings.Fields(stat[closing+1:])
-	// fields[0] is field 3 (state), so field N lives at index N-3.
+	// fields[0] is field 3 (state); starttime is field 22, so index = 22-3 = 19.
+	// See proc(5) § /proc/[pid]/stat.
 	const startTimeField = 22
 	if len(fields) <= startTimeField-3 {
 		return 0, "", fmt.Errorf("proc %d: stat line has %d fields after comm", pid, len(fields))

@@ -46,9 +46,14 @@ type SocketServer struct {
 
 // SocketOptions configures the listening socket.
 type SocketOptions struct {
-	// Group, when set, is the group that owns the socket. Telemetry names
-	// processes and their GPU memory, so the socket must not be readable by
-	// every local user.
+	// Group, when non-empty, is the group that owns the socket file. The socket
+	// is chmod 0660, so only the daemon's uid and members of this group can
+	// connect. Telemetry names processes and their GPU memory, so the socket
+	// must not be readable by every local user.
+	//
+	// When Group is empty, no chown is performed: the socket is owned by the
+	// process's uid and primary gid. This is the right default for development
+	// (where you run as yourself) but should always be set in production.
 	Group string
 }
 
@@ -157,7 +162,10 @@ func (s *SocketServer) handleClient(conn net.Conn) {
 		case <-ticker.C:
 			snapshot := s.getSnapshot()
 
-			// Set write deadline to avoid blocking on slow clients
+			// A write deadline prevents a stalled or zombie client from
+			// holding this goroutine open indefinitely. If the client cannot
+			// drain the connection within 5 seconds we treat it as gone and
+			// close it; the next connect will start a fresh goroutine.
 			if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
 				return
 			}

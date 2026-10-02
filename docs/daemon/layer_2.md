@@ -157,7 +157,7 @@ Standard kernel `uprobes` require a trap and context switch between user space a
 
 ## Implementation
 
-### `daemon/ebpf/uprobes/cuda_actions.bpf.c` (canonical)
+### `ebpf/uprobes/cuda_actions.bpf.c` (canonical)
 
 The full Layer 2 program: fast-path aggregation, the slow-path ring buffer, in-flight entry/exit pairing, and all four probe families.
 

@@ -80,6 +80,8 @@ struct process_snapshot {
     unsigned int count;
     struct process_entry *entries;
     int valid;
+    int complete; /* false if any supported source query failed */
+    int truncated; /* set by bounded consumers that cannot return every entry */
     nvmlReturn_t nvml_error;
     nvmlReturn_t compute_error;
     nvmlReturn_t graphics_error;
@@ -88,6 +90,8 @@ struct process_snapshot {
 
 nvmlReturn_t poller_init(void);
 void poller_shutdown(void);
+void poller_nvml_lock(void);
+void poller_nvml_unlock(void);
 nvmlReturn_t poller_device_count(unsigned int *count);
 void poller_device_metadata(unsigned int index, struct device_metadata *out);
 void poller_snapshot_device_uuid(const char *uuid, struct device_snapshot *out);

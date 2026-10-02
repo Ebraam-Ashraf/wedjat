@@ -16,18 +16,24 @@ Process snapshots combine compute, graphics, and MPS process lists. The list
 size is queried dynamically and retried if it grows. `NVML_VALUE_NOT_AVAILABLE`
 VRAM is represented with `memory_valid == 0`, never as a huge byte count. The
 caller owns the returned entries and must call
-`poller_process_snapshot_destroy`.
+`poller_process_snapshot_destroy`. A snapshot is complete only when at least
+one source succeeds and every other source is either successful or explicitly
+unsupported. Consumers that cap the returned list must mark it truncated and
+incomplete; incomplete lists must not be used to infer that unseen processes
+have exited.
 
 Xid monitoring uses one NVML event set registered against every enumerated GPU.
 For each event, the returned NVML device handle supplies both the UUID and
 current NVML index; the event is timestamped when wait returns. Manual mode
 waits in one-second intervals until a real Xid event arrives.
 
-The C APIs are synchronous. A Go collector that uses them should isolate
-per-device polls and enforce deadlines; a blocked NVML call can otherwise delay
-that caller. The daemon's Go integration should dynamically load NVML if it must
-start on hosts without NVIDIA driver libraries. PID attribution from `/dev/kmsg`
-is not implemented here.
+The C APIs are synchronous and serialized against NVML shutdown/reinitialization.
+A blocked NVML call delays other polls, and the API cannot cancel a call already
+inside the driver. The Go binding loads `libnvidia-ml` at runtime; set
+`WEDJAT_NVML_LIBRARY` to override its soname lookup. A missing library is
+reported by `InitSources`. Building still requires the NVML header; supply a
+nonstandard header location through `CGO_CFLAGS`. PID attribution from
+`/dev/kmsg` is not implemented here.
 
 ## Build and test
 

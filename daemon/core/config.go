@@ -82,6 +82,31 @@ func DefaultConfig() Config {
 	}
 }
 
+// Validate checks that all config values are within acceptable ranges.
+// It is called once at startup so a bad config file produces a clear error
+// rather than silent misbehaviour deep in the daemon.
+func (c *Config) Validate() error {
+	if c.Storage.MaxSizeBytes < 0 {
+		return fmt.Errorf("storage.max_size_bytes must not be negative")
+	}
+	if c.Storage.MinFreeBytes < 0 {
+		return fmt.Errorf("storage.min_free_bytes must not be negative")
+	}
+	if c.Retention.DayFilesDays < 0 {
+		return fmt.Errorf("retention.day_files_days must not be negative")
+	}
+	if c.Retention.ProcessesDays < 0 {
+		return fmt.Errorf("retention.processes_days must not be negative")
+	}
+	if c.Retention.IncidentsDays < 0 {
+		return fmt.Errorf("retention.incidents_days must not be negative")
+	}
+	if c.Retention.MaxDumps < 0 {
+		return fmt.Errorf("retention.max_dumps must not be negative")
+	}
+	return nil
+}
+
 // LoadConfig reads the YAML config file and returns a Config.
 // If the file doesn't exist, returns default config.
 func LoadConfig(path string) (*Config, error) {
