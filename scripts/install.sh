@@ -5,6 +5,7 @@ IFS=$'\n\t'
 REPO_OWNER="Ebraam-Ashraf"
 REPO_NAME="wedjat"
 INSTALL_DIR="/usr/local/bin"
+LIB_DIR="/usr/local/lib/wedjat"
 CONFIG_DIR="/etc/wedjat"
 DATA_DIR="/var/lib/wedjat"
 SERVICE_DIR="/etc/systemd/system"
@@ -77,6 +78,8 @@ fi
 while IFS= read -r member; do
   case "$member" in
     wedjatd|wedjat|wedjat-uninstall|config.yaml|wedjatd.service) ;;
+    ebpf|ebpf/) ;;
+    ebpf/*.bpf.o) ;;
     *) die "unexpected path in release archive: $member" ;;
   esac
 done < <(tar --list --gzip --file "$ARCHIVE")
@@ -100,6 +103,13 @@ if [ ! -e "$CONFIG_DIR/config.yaml" ]; then
   install -o root -g wedjat -m 0640 "$WORK_DIR/config.yaml" "$CONFIG_DIR/config.yaml"
 fi
 install -o root -g root -m 0644 "$WORK_DIR/wedjatd.service" "$SERVICE_DIR/wedjatd.service"
+
+# The compiled BPF objects are the daemon's tracer, not optional extras: without
+# them it loads nothing and falls back to NVML-only polling.
+if [ -d "$WORK_DIR/ebpf" ]; then
+  install -d -o root -g root -m 0755 "$LIB_DIR/ebpf"
+  install -o root -g root -m 0644 "$WORK_DIR"/ebpf/*.bpf.o "$LIB_DIR/ebpf/"
+fi
 
 SUDO_USER="$(printenv SUDO_USER 2>/dev/null || true)"
 if [ -n "$SUDO_USER" ] && id "$SUDO_USER" >/dev/null 2>&1 && command -v usermod >/dev/null; then

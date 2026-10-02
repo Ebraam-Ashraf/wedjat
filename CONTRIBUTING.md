@@ -50,7 +50,7 @@ make dev
 When the `--dev` flag is detected, Wedjat actively protects your host system:
 * It reads config from `./dev-config.yaml` instead of `/etc/wedjat`.
 * It writes SQLite files to `./dev-data/` instead of `/var/lib/wedjat`.
-* It uses `/tmp/wedjat-dev.lock` for file locking.
+* It uses `daemon/dev/run/wedjat.lock` for file locking.
 * It checks if the background `wedjatd.service` is actively running, and if it is, the dev daemon immediately exits. This prevents the dev daemon from colliding with the production daemon and double-attaching eBPF probes.
 * It prints logs straight to `stdout` instead of to `journalctl`.
 

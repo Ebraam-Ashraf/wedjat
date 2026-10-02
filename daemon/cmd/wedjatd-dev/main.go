@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"sync"
@@ -20,12 +21,12 @@ import (
 )
 
 var (
-	// Production paths are hardcoded
-	configPath = "/etc/wedjat/config.yaml"
-	dataDir    = "/var/lib/wedjat"
-	lockFile   = "/run/wedjat/daemon.lock"
-	socketPath = "/run/wedjat/wedjat.sock"
-	socketGroup = "wedjat"
+	// Development paths - relative to working directory
+	configPath  = "./dev/etc/wedjat/config.yaml"
+	dataDir     = "./dev/var/lib/wedjat"
+	lockFile    = "./dev/run/wedjat.lock"
+	socketPath  = "./dev/run/wedjat.sock"
+	socketGroup = "" // No group in dev mode
 )
 
 func main() {
@@ -35,9 +36,16 @@ func main() {
 }
 
 func run() error {
-	log.Println("wedjatd starting (production mode)")
+	log.Println("==> Starting wedjatd-dev in DEVELOPMENT MODE")
 
-	// Paths are already absolute in production
+	// Prevent collision with the installed system daemon
+	cmd := exec.Command("systemctl", "is-active", "--quiet", "wedjatd.service")
+	if err := cmd.Run(); err == nil {
+		return fmt.Errorf("wedjatd.service is running. Stop it first to prevent eBPF conflicts:\n  sudo systemctl stop wedjatd")
+	}
+
+	// Resolve relative paths to absolute
+	var err error
 	paths := Paths{
 		ConfigFile:  configPath,
 		DataDir:     dataDir,
@@ -45,6 +53,27 @@ func run() error {
 		SocketPath:  socketPath,
 		SocketGroup: socketGroup,
 	}
+
+	paths.ConfigFile, err = filepath.Abs(paths.ConfigFile)
+	if err != nil {
+		return fmt.Errorf("resolve config path: %w", err)
+	}
+	paths.DataDir, err = filepath.Abs(paths.DataDir)
+	if err != nil {
+		return fmt.Errorf("resolve data dir: %w", err)
+	}
+	paths.LockFile, err = filepath.Abs(paths.LockFile)
+	if err != nil {
+		return fmt.Errorf("resolve lock file: %w", err)
+	}
+	paths.SocketPath, err = filepath.Abs(paths.SocketPath)
+	if err != nil {
+		return fmt.Errorf("resolve socket path: %w", err)
+	}
+
+	log.Printf("    Config: %s", paths.ConfigFile)
+	log.Printf("    DataDir: %s", paths.DataDir)
+	log.Printf("    Socket: %s", paths.SocketPath)
 
 	// 1. Acquire lock to prevent double-run
 	lock, err := acquireLock(paths.LockFile)
@@ -86,7 +115,7 @@ func run() error {
 		return fmt.Errorf("read previous shutdown state: %w", err)
 	}
 	if !previousClean {
-		log.Println("Warning: the previous daemon run did not shut down cleanly")
+		log.Println("Warning: the previous dev run did not shut down cleanly")
 	}
 
 	// A PID is only unique within one boot, so processes left open by an
@@ -182,7 +211,7 @@ func run() error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
-	log.Println("wedjatd is running")
+	log.Println("wedjatd-dev is running. Press Ctrl+C to stop.")
 
 	// 9. Main loop: poll and heartbeat
 	pollTicker := time.NewTicker(2 * time.Second)

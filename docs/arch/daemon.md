@@ -37,7 +37,7 @@ graph TD
 | :--- | :--- | :--- |
 | **Config File** | `/etc/wedjat/config.yaml` | `./dev-config.yaml` |
 | **Database Dir** | `/var/lib/wedjat` | `./dev-data` |
-| **Lock File** | `/run/wedjat/daemon.lock` | `/tmp/wedjat-dev.lock` |
+| **Lock File** | `/run/wedjat/daemon.lock` | `daemon/dev/run/wedjat.lock` |
 | **BPF Map Pin Path** | `/sys/fs/bpf/wedjat` | *(unpinned, kernel cleans up)* |
 
 ## 3. Startup Order
@@ -50,7 +50,7 @@ The daemon uses the existing `bootstrap.Start` logic to bring up stages in a saf
    - Set up paths according to the mode.
 
 2. **Locking**
-   - Acquire the file lock (e.g., `/run/wedjat/daemon.lock` or `/tmp/wedjat-dev.lock`). This prevents two instances of the same mode from running.
+   - Acquire the file lock (e.g., `/run/wedjat/daemon.lock` or `daemon/dev/run/wedjat.lock`). This prevents two instances of the same mode from running.
 
 3. **Stage 1: Store (`store.Open`)**
    - Opens the SQLite databases (metadata and daily).

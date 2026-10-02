@@ -10,3 +10,27 @@ retention:
   processes_days: 90
   incidents_days: 90
   max_dumps: 20
+
+tracing:
+  # eBPF tracing. If the kernel refuses the load the daemon logs a warning and
+  # keeps running on NVML polling alone.
+  enabled: true
+  # Send every event to userspace instead of only counting the hot paths. This
+  # makes process exit and sync latency exact, at the cost of noticeably more
+  # ring buffer traffic.
+  raw_capture: false
+  # Microseconds a single CUDA sync may take before it is recorded as a stall.
+  # 0 uses the built-in default of 250000 (250 ms).
+  sync_stall_us: 0
+  # Leave objects_dir and libcuda_path empty to use the defaults. objects_dir is
+  # only needed when running from a checkout that has not been installed.
+  objects_dir: ""
+  pin_dir: ""
+  libcuda_path: ""
+  # Distributions ship libcuda.so.1 as 0644, and eBPF uprobes require the target
+  # to be readable as executable. Without this, no CUDA API probe can attach.
+  # The daemon adds the bit itself and logs each time it does. The package
+  # manager restores 0644 on the next driver upgrade, so it is reapplied at each
+  # start. Set false to leave the library untouched, in which case run this
+  # yourself: chmod a+x /usr/lib/x86_64-linux-gnu/libcuda.so.1
+  fix_libcuda_permissions: true

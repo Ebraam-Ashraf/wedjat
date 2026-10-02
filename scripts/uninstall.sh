@@ -8,6 +8,9 @@ systemctl disable --now wedjatd || true
 echo "[2/4] removing unit + binaries..."
 rm -f /etc/systemd/system/wedjatd.service
 rm -f /usr/local/bin/wedjatd /usr/local/bin/wedjat
+# The compiled BPF objects are daemon code, not collected data, so they go with
+# the binaries.
+rm -rf /usr/local/lib/wedjat
 systemctl daemon-reload
 
 echo "[3/4] configuration and history are preserved by default."

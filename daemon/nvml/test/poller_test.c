@@ -141,18 +141,45 @@ static int test_process_snapshot(const char *fixture_path, const char *uuid)
 {
     const unsigned long long alloc_bytes = 256ULL * 1024 * 1024;
     const long n_elements = (long)(alloc_bytes / sizeof(float));
-    pid_t child = run_fixture(fixture_path, uuid, n_elements, 10, 300);
+    /* The fixture must outlive the observation window below. NVML only lists a
+     * process once its context is registered, which on a loaded machine can take
+     * a moment, and a fixture that finishes first can never be observed at all.
+     * 20 * 300ms of fixture against a 5s window leaves real margin. The child is
+     * killed as soon as it is found, so this does not slow the passing path. */
+    const int fixture_iters = 20;
+    const int fixture_sleep_ms = 300;
+    const int discover_attempts = 33; /* 33 * 150ms = 4.95s */
+    const int discover_sleep_us = 150 * 1000;
+
+    pid_t child =
+        run_fixture(fixture_path, uuid, n_elements, fixture_iters, fixture_sleep_ms);
     ASSERT_TRUE(child > 0, "failed to start CUDA fixture");
 
     struct process_snapshot snapshot = {};
     const struct process_entry *found = NULL;
-    for (int attempt = 0; attempt < 20 && !found; attempt++) {
+    /* NVML accounts a process's memory asynchronously, so a process can appear
+     * in the process list before its allocation shows up in used_gpu_memory.
+     * Reading once, at first sighting, therefore races that accounting and
+     * reports the CUDA context alone. Keep sampling after the process is found
+     * and keep the largest reading, which is the one that has caught up; stop
+     * as soon as the allocation is plausibly accounted for. */
+    unsigned long long best_memory = 0;
+    for (int attempt = 0; attempt < discover_attempts; attempt++) {
         poller_process_snapshot_destroy(&snapshot);
         poller_snapshot_processes_uuid(uuid, &snapshot);
-        if (snapshot.valid)
-            found = poller_find_pid(&snapshot, (unsigned int)child);
-        if (!found)
-            usleep(150 * 1000);
+        if (snapshot.valid) {
+            const struct process_entry *entry =
+                poller_find_pid(&snapshot, (unsigned int)child);
+            if (entry) {
+                found = entry;
+                if (entry->memory_valid && entry->used_gpu_memory > best_memory)
+                    best_memory = entry->used_gpu_memory;
+                if (best_memory >= alloc_bytes / 2)
+                    break;
+            }
+        }
+        if (!found || best_memory < alloc_bytes / 2)
+            usleep(discover_sleep_us);
     }
 
     kill(child, SIGTERM);
@@ -176,12 +203,12 @@ static int test_process_snapshot(const char *fixture_path, const char *uuid)
         poller_process_snapshot_destroy(&snapshot);
         return PASS;
     }
-    ASSERT_TRUE(found->used_gpu_memory != ULLONG_MAX,
+    ASSERT_TRUE(best_memory != ULLONG_MAX,
                 "NOT_AVAILABLE memory must not escape as a valid measurement");
-    ASSERT_IN_RANGE(found->used_gpu_memory, alloc_bytes / 2, alloc_bytes * 4,
+    ASSERT_IN_RANGE(best_memory, alloc_bytes / 2, alloc_bytes * 4,
                     "NVML process memory should be plausible for the known allocation");
     printf("PASS process pid=%u memory=%lluMiB sources=0x%x\n",
-           found->pid, found->used_gpu_memory / (1024 * 1024), found->source_flags);
+           found->pid, best_memory / (1024 * 1024), found->source_flags);
     poller_process_snapshot_destroy(&snapshot);
     return PASS;
 }

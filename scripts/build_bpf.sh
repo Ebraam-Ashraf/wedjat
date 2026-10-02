@@ -6,6 +6,14 @@ BPF_CFLAGS="-g -O2 -target bpf -D__TARGET_ARCH_${ARCH} -D__bpf__"
 
 mkdir -p daemon/ebpf/build
 
+# Clear previous outputs before compiling.
+#
+# A build run under sudo leaves objects owned by root, and the next build as a
+# normal user cannot open them for writing. Removing them first is enough to
+# recover, because unlinking a file needs write permission on the directory, not
+# on the file itself.
+rm -f daemon/ebpf/build/*.bpf.o daemon/ebpf/build/*.skel.h
+
 bpftool btf dump file /sys/kernel/btf/vmlinux format c > daemon/ebpf/build/vmlinux.h
 BPF_CFLAGS+=" -Idaemon/ebpf/build -Idaemon/ebpf"
 
