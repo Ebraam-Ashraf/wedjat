@@ -33,7 +33,7 @@ func TestConfigDefaultsAndRoundTrip(t *testing.T) {
 		t.Fatalf("load config: %v", err)
 	}
 	defaults := core.DefaultConfig()
-	if loaded.Storage != defaults.Storage || loaded.Retention != defaults.Retention || loaded.Tracing != defaults.Tracing {
+	if loaded.Storage != defaults.Storage || loaded.Polling != defaults.Polling {
 		t.Fatalf("loaded config differs from defaults: got %+v, want %+v", *loaded, defaults)
 	}
 }
@@ -43,8 +43,11 @@ func TestLoadConfigMissingUsesDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load missing config: %v", err)
 	}
-	if loaded.Storage.MaxSizeBytes != 500<<20 || !loaded.Tracing.Enabled {
-		t.Fatalf("unexpected missing-file defaults: %+v", *loaded)
+	if loaded.Polling.NvmlDbTickMs != 2000 {
+		t.Fatalf("unexpected default NvmlDbTickMs: got %d, want 2000", loaded.Polling.NvmlDbTickMs)
+	}
+	if loaded.Polling.NvmlSocketTickMs != 500 {
+		t.Fatalf("unexpected default NvmlSocketTickMs: got %d, want 500", loaded.Polling.NvmlSocketTickMs)
 	}
 }
 
@@ -62,50 +65,41 @@ func TestLoadConfigMalformedYAML(t *testing.T) {
 
 func TestLoadConfigFieldCompleteness(t *testing.T) {
 	d := core.DefaultConfig()
-	if d.Storage.MaxSizeBytes <= 0 {
-		t.Errorf("Storage.MaxSizeBytes = %d, want > 0", d.Storage.MaxSizeBytes)
+	if d.Storage.DayFilesDays <= 0 {
+		t.Errorf("Storage.DayFilesDays = %d, want > 0", d.Storage.DayFilesDays)
 	}
-	if d.Storage.MinFreeBytes <= 0 {
-		t.Errorf("Storage.MinFreeBytes = %d, want > 0", d.Storage.MinFreeBytes)
+	if d.Storage.ProcessesDays <= 0 {
+		t.Errorf("Storage.ProcessesDays = %d, want > 0", d.Storage.ProcessesDays)
 	}
-	if !d.Storage.ResetOnBoot {
-		t.Error("Storage.ResetOnBoot = false, want true")
+	if d.Storage.IncidentsDays <= 0 {
+		t.Errorf("Storage.IncidentsDays = %d, want > 0", d.Storage.IncidentsDays)
 	}
-	if d.Retention.DayFilesDays <= 0 {
-		t.Errorf("Retention.DayFilesDays = %d, want > 0", d.Retention.DayFilesDays)
+	if d.Polling.NvmlDbTickMs <= 0 {
+		t.Errorf("Polling.NvmlDbTickMs = %d, want > 0", d.Polling.NvmlDbTickMs)
 	}
-	if d.Retention.ProcessesDays <= 0 {
-		t.Errorf("Retention.ProcessesDays = %d, want > 0", d.Retention.ProcessesDays)
+	if d.Polling.NvmlSocketTickMs <= 0 {
+		t.Errorf("Polling.NvmlSocketTickMs = %d, want > 0", d.Polling.NvmlSocketTickMs)
 	}
-	if d.Retention.IncidentsDays <= 0 {
-		t.Errorf("Retention.IncidentsDays = %d, want > 0", d.Retention.IncidentsDays)
-	}
-	if d.Retention.MaxDumps <= 0 {
-		t.Errorf("Retention.MaxDumps = %d, want > 0", d.Retention.MaxDumps)
-	}
-	if !d.Tracing.Enabled {
-		t.Error("Tracing.Enabled = false, want true")
-	}
-	if !d.Tracing.FixLibcudaPermissions {
-		t.Error("Tracing.FixLibcudaPermissions = false, want true")
+	if d.Polling.NvmlSocketTickMs >= d.Polling.NvmlDbTickMs {
+		t.Errorf("socket tick (%dms) must be faster than db tick (%dms)",
+			d.Polling.NvmlSocketTickMs, d.Polling.NvmlDbTickMs)
 	}
 }
 
 func TestValidateRejectsNegativeValues(t *testing.T) {
 	cases := map[string]func(*core.Config){
-		"max_size_bytes": func(c *core.Config) { c.Storage.MaxSizeBytes = -1 },
-		"min_free_bytes": func(c *core.Config) { c.Storage.MinFreeBytes = -1 },
-		"day_files_days": func(c *core.Config) { c.Retention.DayFilesDays = -1 },
-		"processes_days": func(c *core.Config) { c.Retention.ProcessesDays = -1 },
-		"incidents_days": func(c *core.Config) { c.Retention.IncidentsDays = -1 },
-		"max_dumps":      func(c *core.Config) { c.Retention.MaxDumps = -1 },
+		"day_files_days":      func(c *core.Config) { c.Storage.DayFilesDays = -1 },
+		"processes_days":      func(c *core.Config) { c.Storage.ProcessesDays = -1 },
+		"incidents_days":      func(c *core.Config) { c.Storage.IncidentsDays = -1 },
+		"nvml_db_tick_ms":     func(c *core.Config) { c.Polling.NvmlDbTickMs = 0 },
+		"nvml_socket_tick_ms": func(c *core.Config) { c.Polling.NvmlSocketTickMs = 0 },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
 			cfg := core.DefaultConfig()
 			mutate(&cfg)
 			if err := cfg.Validate(); err == nil {
-				t.Fatalf("Validate accepted negative %s", name)
+				t.Fatalf("Validate accepted invalid %s", name)
 			}
 		})
 	}

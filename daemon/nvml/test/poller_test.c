@@ -207,6 +207,10 @@ static int test_process_snapshot(const char *fixture_path, const char *uuid)
 
 int main(int argc, char **argv)
 {
+    if (geteuid() != 0 || access("/dev/nvidiactl", F_OK) != 0) {
+        printf("SKIP: root and an NVIDIA device are required\n");
+        return SKIP;
+    }
     if (argc < 2) {
         fprintf(stderr, "usage: %s <fixture> (e.g. k1)\n", argv[0]);
         return FAIL;

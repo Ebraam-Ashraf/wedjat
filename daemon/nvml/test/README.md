@@ -13,7 +13,7 @@ integration tests that link against `libnvidia-ml.so` and run against a real GPU
 cd daemon/nvml/test
 
 make build             # build binaries → build/
-make build-inputs      # CUDA fixture binaries (k1, k2, …)
+make build-inputs      # CUDA fixture binaries (k1, k2, …; skipped if nvcc is unavailable)
 
 make test              # run automated tests
 make run-poller-test
@@ -92,6 +92,8 @@ xid_test: PASS
 - Real NVIDIA GPU + driver (`nvidia-smi` must work)
 - `libnvidia-ml.so` (from the NVIDIA driver package — usually `/usr/lib/x86_64-linux-gnu`)
 - `nvml.h` (from the CUDA Toolkit — usually `/usr/local/cuda/include`)
+- `nvcc` is needed for the process-polling fixture; without it, that test is
+  reported as skipped while the other NVML tests continue.
 - Root is **not** required for `poller_test`
 - Root **may** be required for `xid_test` (`nvmlDeviceRegisterEvents`) depending on driver config
 

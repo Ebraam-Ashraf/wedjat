@@ -1,3 +1,4 @@
+NVCC ?= nvcc
 BUILD := build
 
 # bpftime's CUDA attach works by extracting the PTX out of a fatbin, patching
@@ -9,7 +10,7 @@ BUILD := build
 # Falls back to 86 (the arch bpftime's PTX pass compiles for, see
 # ptxpass::compile_ebpf_to_ptx_from_words(..., "sm_61", ...)) if the probe
 # below does not work.
-NATIVE_ARCH := $(shell nvcc -arch=native --dryrun -c /dev/null -o /dev/null \
+NATIVE_ARCH := $(shell $(NVCC) -arch=native --dryrun -c /dev/null -o /dev/null \
                   2>&1 | grep -o 'sm_[0-9]*' | head -1)
 VIRTUAL_ARCH := compute_$(patsubst sm_%,%,$(if $(NATIVE_ARCH),$(NATIVE_ARCH),sm_86))
 
@@ -27,7 +28,7 @@ build: all
 
 $(BUILD)/%: %.cu
 	@mkdir -p $(BUILD)
-	nvcc $(NVCCFLAGS) -o $@ $<
+	$(NVCC) $(NVCCFLAGS) -o $@ $<
 
 clean:
 	rm -rf $(BUILD)

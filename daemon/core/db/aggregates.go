@@ -70,10 +70,18 @@ func (db *DB) WriteAggregates(ctx context.Context, at time.Time, rows []Aggregat
 	}
 	defer tx.Rollback()
 
+	if err := writeAggregatesTx(ctx, tx, minute, rows); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func writeAggregatesTx(ctx context.Context, tx *sql.Tx, minute int64, rows []Aggregate) error {
 	stmt, err := tx.PrepareContext(ctx, aggregateUpsert)
 	if err != nil {
 		return err
 	}
+	defer stmt.Close()
 	for _, row := range rows {
 		if _, err := stmt.ExecContext(ctx,
 			minute, row.ProcessID, row.GPUID,
@@ -82,14 +90,10 @@ func (db *DB) WriteAggregates(ctx context.Context, at time.Time, rows []Aggregat
 			row.SyncCalls, row.SyncUsSum, row.SyncUsMax,
 			row.IoctlCalls, row.UvmFaults, row.UvmEvicts, row.Errors,
 		); err != nil {
-			stmt.Close()
 			return fmt.Errorf("upsert aggregate: %w", err)
 		}
 	}
-	if err := stmt.Close(); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return nil
 }
 
 // aggregateUpsert adds counters together and keeps the worst observed latency.
@@ -154,6 +158,16 @@ func (db *DB) WriteIncident(ctx context.Context, incident Incident) (int64, erro
 		return 0, err
 	}
 
+	return db.writeIncidentTx(ctx, nil, incident)
+}
+
+func (db *DB) writeIncidentTx(ctx context.Context, tx *sql.Tx, incident Incident) (int64, error) {
+	if incident.Type == "" || incident.DedupeKey == "" {
+		return 0, errors.New("db: incident type and dedupe key are required")
+	}
+	if len(incident.DedupeKey) > 512 { return 0, fmt.Errorf("db: incident dedupe key too long (%d bytes, max 512)",len(incident.DedupeKey)) }
+	if incident.FirstTS < 0 || incident.LastTS < 0 { return 0, errors.New("db: negative incident timestamp") }
+	if incident.FirstTS > incident.LastTS { incident.FirstTS,incident.LastTS=incident.LastTS,incident.FirstTS }
 	// Fold into the existing row when one is still recent, so a repeating
 	// problem is one incident with a rising occurrence count.
 	//
@@ -165,7 +179,13 @@ func (db *DB) WriteIncident(ctx context.Context, incident Incident) (int64, erro
 	windowStart := time.Now().Unix() - dedupeWindowSeconds
 
 	var incidentID int64
-	err := db.meta.QueryRowContext(ctx,
+	query := func(query string, args ...any) error {
+		if tx != nil {
+			return tx.QueryRowContext(ctx, query, args...).Scan(&incidentID)
+		}
+		return db.meta.QueryRowContext(ctx, query, args...).Scan(&incidentID)
+	}
+	err := query(
 		`UPDATE incidents
 		    SET last_ts = MAX(last_ts, ?),
 		        occurrences = occurrences + 1,
@@ -174,17 +194,17 @@ func (db *DB) WriteIncident(ctx context.Context, incident Incident) (int64, erro
 		    AND last_ts >= ?
 		 RETURNING incident_id`,
 		incident.LastTS, incident.Summary, incident.DedupeKey,
-		windowStart).Scan(&incidentID)
+		windowStart)
 
 	if errors.Is(err, sql.ErrNoRows) {
-		if err := db.meta.QueryRowContext(ctx,
+		if err := query(
 			`INSERT INTO incidents
 			   (type, proc_id, gpu_id, first_ts, last_ts, occurrences, dedupe_key, summary, detail)
 			 VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
 			 RETURNING incident_id`,
 			incident.Type, incident.ProcessID, incident.GPUID,
 			incident.FirstTS, incident.LastTS,
-			incident.DedupeKey, incident.Summary, incident.Detail).Scan(&incidentID); err != nil {
+			incident.DedupeKey, incident.Summary, incident.Detail); err != nil {
 			return 0, fmt.Errorf("insert incident: %w", err)
 		}
 		return incidentID, nil

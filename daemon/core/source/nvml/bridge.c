@@ -5,8 +5,8 @@
 /* ── Pull in the NVML C source files via #include so they compile
  *    inside this single cgo translation unit. ──────────────────── */
 
-#include "../nvml/poller.c"
-#include "../nvml/xid.c"
+#include "../../../nvml/poller.c"
+#include "../../../nvml/xid.c"
 
 /* ── Lifecycle ────────────────────────────────────────────────────── */
 
@@ -161,4 +161,28 @@ void collector_snapshot_procs(const char *uuid, struct collector_proc_list *list
         list->entries[i].vram_valid = ps.entries[i].memory_valid;
     }
     poller_process_snapshot_destroy(&ps);
+}
+
+void *collector_xid_create(void) {
+    return xid_event_set_create();
+}
+
+int collector_xid_wait(void *opaque, struct collector_xid_event *out, unsigned int timeout_ms) {
+    if (!opaque || !out)
+        return XID_WAIT_ERROR;
+    struct xid_event event;
+    int result = xid_event_set_wait((struct xid_event_set *)opaque, &event, timeout_ms);
+    if (result != XID_WAIT_OK)
+        return result;
+    memset(out, 0, sizeof(*out));
+    out->timestamp_ns = event.timestamp_ns;
+    out->device_index = event.device_index;
+    snprintf(out->device_uuid, sizeof(out->device_uuid), "%s", event.device_uuid);
+    out->nvml_event_type = event.nvml_event_type;
+    out->nvml_event_data = event.nvml_event_data;
+    return result;
+}
+
+void collector_xid_destroy(void *opaque) {
+    xid_event_set_destroy((struct xid_event_set *)opaque);
 }

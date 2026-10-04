@@ -1,6 +1,6 @@
 // Package daemon contains the shared startup, poll loop, and shutdown logic
-// used by all wedjat daemon binaries. It sits above both core and core/ebpf in
-// the import graph and is therefore kept as an internal package so it is not
+// used by all wedjat daemon binaries. It sits above core and core/source in
+// the import graph and is kept as an internal package so it is not
 // accidentally imported by packages that would close a cycle.
 package daemon
 
@@ -13,14 +13,14 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/Ebraam-Ashraf/wedjat/daemon/core"
-	"github.com/Ebraam-Ashraf/wedjat/daemon/core/db"
-	"github.com/Ebraam-Ashraf/wedjat/daemon/core/ebpf"
-	"github.com/Ebraam-Ashraf/wedjat/daemon/core/nvml"
+	coredb "github.com/Ebraam-Ashraf/wedjat/daemon/core/db"
+	"github.com/Ebraam-Ashraf/wedjat/daemon/core/source"
+	sourceebpf "github.com/Ebraam-Ashraf/wedjat/daemon/core/source/ebpf"
+	"github.com/Ebraam-Ashraf/wedjat/daemon/core/source/nvml"
 )
 
 // Paths holds the filesystem locations the daemon reads from and writes to.
@@ -33,7 +33,7 @@ type Paths struct {
 }
 
 // Run runs the full daemon lifecycle: lock, config, database, NVML, eBPF,
-// socket, poll loop, and clean shutdown. It blocks until a signal is received.
+// socket, and clean shutdown. It blocks until a signal is received.
 //
 // preRun, when non-nil, is called before the lock is acquired. It is the
 // caller's hook for mode-specific checks (e.g. the dev-mode systemd guard).
@@ -68,21 +68,23 @@ func Run(paths Paths, readyMsg string, preRun func() error) error {
 
 	// 3. Open database.
 	ctx := context.Background()
-	database, err := db.OpenDB(ctx, paths.DataDir)
+	database, err := coredb.OpenDB(ctx, paths.DataDir)
 	if err != nil {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer database.Close()
 	log.Printf("Database opened: %s", paths.DataDir)
+	if _, _, err := database.PruneMeta(ctx, time.Now().UTC(), cfg.Storage.ProcessesDays, cfg.Storage.IncidentsDays); err != nil {
+		return fmt.Errorf("prune metadata: %w", err)
+	}
 
-	// Boot ID. It is trimmed once here so every table stores the same value;
-	// a trailing newline would silently break joins on boot_id.
-	bootID, err := core.ReadBootID()
+	// 4. Boot ID.
+	bootID, err := ReadBootID()
 	if err != nil {
 		return fmt.Errorf("read boot ID: %w", err)
 	}
 
-	// Report on the previous run before overwriting its state.
+	// 5. Previous run checks.
 	previousClean, err := database.PreviousCleanShutdown(ctx)
 	if err != nil {
 		return fmt.Errorf("read previous shutdown state: %w", err)
@@ -91,8 +93,6 @@ func Run(paths Paths, readyMsg string, preRun func() error) error {
 		log.Println("Warning: the previous daemon run did not shut down cleanly")
 	}
 
-	// A PID is only unique within one boot, so processes left open by an
-	// earlier boot can never be matched again and are closed as rebooted.
 	closed, err := database.CloseProcessesFromOtherBoots(ctx, bootID, time.Now().Unix())
 	if err != nil {
 		return fmt.Errorf("close processes from earlier boots: %w", err)
@@ -104,151 +104,154 @@ func Run(paths Paths, readyMsg string, preRun func() error) error {
 	if err := database.WriteBootID(ctx, bootID); err != nil {
 		return fmt.Errorf("write boot ID: %w", err)
 	}
-
-	// Mark clean shutdown as false; will be set to true on exit.
 	if err := database.WriteCleanShutdown(ctx, false); err != nil {
 		return fmt.Errorf("write shutdown state: %w", err)
 	}
 
-	// 4. Hand the daily database lifecycle to the timer. The wait group makes
-	// shutdown wait for it, otherwise the timer could still be inside a
-	// rotation while the deferred database.Close runs.
+	// 6. Daily database lifecycle timer.
 	timerCtx, stopTimer := context.WithCancel(ctx)
 	var timerWG sync.WaitGroup
 	timerWG.Add(1)
 	go func() {
 		defer timerWG.Done()
-		db.RunDayTimer(timerCtx, database, cfg.Retention.DayFilesDays)
+		coredb.RunDayTimerWithMeta(timerCtx, database, cfg.Storage.DayFilesDays,
+			cfg.Storage.ProcessesDays, cfg.Storage.IncidentsDays)
 	}()
 	defer func() {
 		stopTimer()
 		timerWG.Wait()
 	}()
 
-	// 5. Initialize NVML when it is available. The daemon also provides
-	// eBPF-based telemetry, so a host without the NVIDIA driver/library should
-	// still be able to run its socket and database services.
-	var devices []nvml.DeviceInfo
+	// 7. Initialize NVML. Best effort: a host without the NVIDIA driver still
+	// benefits from eBPF-based telemetry.
+	var devices []source.DeviceInfo
+	var gpuUUIDs []string
+	nvmlAvailable := false
+	nvmlShutdown := false
+
 	if err := nvml.InitSources(); err != nil {
 		log.Printf("Warning: NVML unavailable: %v; continuing without NVML telemetry", err)
 	} else {
-		defer nvml.ShutdownSources()
+		nvmlAvailable = true
+		defer func() {
+			if nvmlAvailable && !nvmlShutdown {
+				nvml.ShutdownSources()
+			}
+		}()
 		log.Println("NVML initialized")
 
-		devices, err = nvml.DiscoverDevices()
+		discovered, err := nvml.DiscoverDevices()
 		if err != nil {
 			log.Printf("Warning: GPU discovery failed: %v; continuing without NVML telemetry", err)
-			devices = nil
 		} else {
+			devices = discovered
 			log.Printf("Discovered %d GPU(s)", len(devices))
 		}
 	}
 
-	if err := core.RegisterDevices(ctx, database, devices); err != nil {
+	// 8. Register devices and build channels.
+	if _, err := database.RegisterDevices(ctx, devices); err != nil {
 		return fmt.Errorf("register devices: %w", err)
 	}
 
-	gpuUUIDs := make([]string, len(devices))
-	for i, device := range devices {
-		gpuUUIDs[i] = device.UUID
-		log.Printf("  GPU %d: %s (%s)", device.Index, device.UUID, device.Name)
+	gpuUUIDs = make([]string, len(devices))
+	for i, d := range devices {
+		gpuUUIDs[i] = d.UUID
+		log.Printf("  GPU %d: %s (%s)", d.Index, d.UUID, d.Name)
 	}
 
-	// 6. Start socket server. Clients are served from the snapshot the poll
-	// loop already produced, so a client costs nothing instead of triggering
-	// its own NVML sweep.
-	var latest atomic.Pointer[core.Snapshot]
-	socketServer, err := core.StartSocketWithOptions(paths.SocketPath, func() core.Snapshot {
-		if cached := latest.Load(); cached != nil {
-			return *cached
-		}
-		return core.Snapshot{}
-	}, core.SocketOptions{Group: paths.SocketGroup})
+	dbc := source.NewChans(4096)
+	sc := source.NewChans(64)
+
+	// 9. Start DB layer.
+	layer := coredb.StartLayer(ctx, database, bootID, devices, dbc)
+	defer layer.Stop()
+	log.Println("DB layer started")
+
+	// 10. Start socket server.
+	socketServer, err := core.StartSocketWithOptions(
+		paths.SocketPath,
+		sc,
+		core.SocketOptions{Group: paths.SocketGroup},
+	)
 	if err != nil {
 		return fmt.Errorf("start socket: %w", err)
 	}
 	defer socketServer.Stop()
 	log.Printf("Socket server started: %s", paths.SocketPath)
 
-	// 7. Start the eBPF tracer. It is best effort: without the privileges to
-	// load BPF, or on a driver whose symbols moved, the daemon keeps running on
-	// NVML alone and says so rather than refusing to start.
-	tracerSession, err := ebpf.StartTracer(ctx, database, bootID, devices, cfg.Tracing)
+	// 11. Start NVML polling goroutine (best effort — only when NVML init succeeded).
+	var cancelNVML context.CancelFunc
+	var nvmlDone chan struct{}
+	if nvmlAvailable && len(gpuUUIDs) > 0 {
+		nvmlCtx, cancel := context.WithCancel(ctx)
+		cancelNVML = cancel
+		nvmlDone = make(chan struct{})
+		go func() {
+			defer close(nvmlDone)
+			nvml.Run(nvmlCtx, dbc, sc, gpuUUIDs, cfg.Polling.NvmlDbTickMs, cfg.Polling.NvmlSocketTickMs)
+		}()
+		log.Println("NVML polling started")
+	}
+
+	// 12. Start eBPF tracer. Best effort.
+	tracerCfg := sourceebpf.DefaultTracerConfig()
+	tracerCfg.DrainTickMs = cfg.Polling.EbpfDrainTickMs
+	tracerSession, err := sourceebpf.Start(ctx, tracerCfg, dbc, sc)
 	if err != nil {
-		if !ebpf.ObjectsExist(cfg.Tracing.ObjectsDir) {
-			log.Printf("Warning: eBPF objects not built under %q, continuing with NVML only "+
-				"(run 'make bpf')", cfg.Tracing.ObjectsDir)
+		if !sourceebpf.ObjectsExist(tracerCfg.ObjectsDir) {
+			log.Printf("Warning: eBPF objects not built, continuing with NVML only " +
+				"(run 'make bpf')")
 		} else {
 			log.Printf("Warning: eBPF tracing unavailable: %v; continuing with NVML only", err)
 		}
 	} else if tracerSession != nil {
-		defer tracerSession.Close()
+		log.Println("eBPF tracer started")
 	}
 
-	// 8. Setup signal handling.
+	// 13. Signal handling.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 
 	log.Println(readyMsg)
 
-	// 9. Main loop: poll and heartbeat.
-	pollTicker := time.NewTicker(2 * time.Second)
-	defer pollTicker.Stop()
+	// 14. Wait for shutdown signal.
+	sig := <-sigCh
+	log.Printf("Received signal %s, initiating clean shutdown...", sig)
 
-	heartbeatTicker := time.NewTicker(10 * time.Second)
-	defer heartbeatTicker.Stop()
-
-	// Kernel counters are cumulative, so this keeps the last value seen and
-	// only a growth is worth logging.
-	var lastStats ebpf.Stats
-
-	for {
-		select {
-		case <-pollTicker.C:
-			snapshot := core.BuildSnapshot(gpuUUIDs)
-			latest.Store(&snapshot)
-			if err := core.Record(ctx, database, bootID, snapshot); err != nil {
-				log.Printf("Warning: failed to record samples: %v", err)
-			}
-
-		case <-heartbeatTicker.C:
-			if err := database.WriteHeartbeat(ctx); err != nil {
-				log.Printf("Warning: failed to write heartbeat: %v", err)
-			}
-			// Ring buffer drops mean the daemon could not keep up with the
-			// event stream and the kernel discarded records. That is silent
-			// data loss unless it is reported. The counters are cumulative, so
-			// only the growth since the last check is reported.
-			if tracerSession != nil {
-				stats, err := tracerSession.Stats()
-				if err == nil {
-					if grew := stats.RingbufDrops > lastStats.RingbufDrops ||
-						stats.MapUpdateFailures > lastStats.MapUpdateFailures ||
-						stats.AllocFreeMisses > lastStats.AllocFreeMisses ||
-						stats.Unattributed > lastStats.Unattributed; grew {
-						log.Printf("Warning: eBPF events not fully recorded: ringbuf_drops=+%d "+
-							"map_update_failures=+%d alloc_free_misses=+%d unattributed=+%d unknown_device=%d",
-							stats.RingbufDrops-lastStats.RingbufDrops,
-							stats.MapUpdateFailures-lastStats.MapUpdateFailures,
-							stats.AllocFreeMisses-lastStats.AllocFreeMisses,
-							stats.Unattributed-lastStats.Unattributed,
-							stats.UnknownDeviceEvents)
-					}
-					lastStats = stats
-				}
-			}
-
-		case sig := <-sigCh:
-			log.Printf("Received signal %s, initiating clean shutdown...", sig)
-
-			if err := database.WriteCleanShutdown(ctx, true); err != nil {
-				log.Printf("Warning: failed to mark clean shutdown: %v", err)
-			}
-
-			log.Println("Clean shutdown complete.")
-			return nil
+	// Shutdown order: eBPF → NVML → socket → layer → clean shutdown flag.
+	if tracerSession != nil {
+		if err := tracerSession.Close(); err != nil {
+			log.Printf("Warning: eBPF session close: %v", err)
 		}
 	}
+	if cancelNVML != nil {
+		cancelNVML()
+		<-nvmlDone
+	}
+	if nvmlAvailable {
+		nvml.ShutdownSources()
+		nvmlShutdown = true
+	}
+	if err := socketServer.Stop(); err != nil {
+		log.Printf("Warning: socket shutdown: %v", err)
+	}
+	if err := layer.Stop(); err != nil {
+		log.Printf("Warning: DB layer final flush failed; shutdown will remain unclean: %v", err)
+		return err
+	}
+	stopTimer()
+	timerWG.Wait()
+
+	if err := database.WriteCleanShutdown(ctx, true); err != nil {
+		log.Printf("Warning: failed to mark clean shutdown: %v", err)
+		return err
+	}
+	if err := database.Close(); err != nil {
+		return fmt.Errorf("close database: %w", err)
+	}
+	log.Println("Clean shutdown complete.")
+	return nil
 }
 
 // Lock represents an exclusive file lock that prevents multiple daemon instances.
@@ -271,7 +274,7 @@ func acquireLock(path string) (*Lock, error) {
 	}
 	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0600)
 	if err != nil {
-		return nil, fmt.Errorf("%s (hint: this usually means the file was created by a different user; remove it, or always run the daemon with the same privileges)", describeLockError(path, err))
+		return nil, fmt.Errorf("%w", describeLockError(path, err))
 	}
 	file := os.NewFile(uintptr(fd), path)
 	if err := syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
@@ -284,23 +287,21 @@ func acquireLock(path string) (*Lock, error) {
 	return &Lock{file: file, open: true}, nil
 }
 
-// describeLockError enriches a permission error with the owning uid, so the
-// operator knows which user created the lock file.
+// describeLockError enriches a permission error with the owning uid.
 func describeLockError(path string, err error) error {
 	if !errors.Is(err, syscall.EACCES) && !errors.Is(err, syscall.EPERM) {
 		return fmt.Errorf("open lock file %s: %w", path, err)
 	}
 	owner := "another user"
 	if info, statErr := os.Stat(path); statErr == nil {
-		if uid, uidOK := info.Sys().(*syscall.Stat_t); uidOK {
-			owner = fmt.Sprintf("uid %d", uid.Uid)
+		if st, ok := info.Sys().(*syscall.Stat_t); ok {
+			owner = fmt.Sprintf("uid %d", st.Uid)
 		}
 	}
 	return fmt.Errorf("open lock file %s: %w (owned by %s)", path, err, owner)
 }
 
-// Release unlocks and closes the lock file. It is safe to call on a nil Lock
-// and to call more than once.
+// Release unlocks and closes the lock file. Safe to call on nil or multiple times.
 func (l *Lock) Release() error {
 	if l == nil {
 		return nil

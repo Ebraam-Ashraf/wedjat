@@ -135,8 +135,16 @@ func (db *DB) UpsertProcess(ctx context.Context, proc ProcessIdentity) (int64, e
 		return 0, err
 	}
 
+	return upsertProcessTx(ctx, db.meta, proc)
+}
+
+type queryRower interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func upsertProcessTx(ctx context.Context, tx queryRower, proc ProcessIdentity) (int64, error) {
 	var procID int64
-	if err := db.meta.QueryRowContext(ctx, processIdentityUpsert,
+	if err := tx.QueryRowContext(ctx, processIdentityUpsert,
 		proc.BootID, proc.TGID, proc.StartTicks, proc.Command, proc.FirstSeenUnix,
 	).Scan(&procID); err != nil {
 		return 0, fmt.Errorf("upsert process %d: %w", proc.TGID, err)
@@ -172,6 +180,13 @@ func (db *DB) UpsertProcessVRAM(ctx context.Context, rows []ProcessVRAM) error {
 	}
 	defer tx.Rollback()
 
+	if err := upsertProcessVRAMTx(ctx, tx, rows); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func upsertProcessVRAMTx(ctx context.Context, tx *sql.Tx, rows []ProcessVRAM) error {
 	stmt, err := tx.PrepareContext(ctx, processVRAMUpsert)
 	if err != nil {
 		return err
@@ -187,7 +202,7 @@ func (db *DB) UpsertProcessVRAM(ctx context.Context, rows []ProcessVRAM) error {
 	if err := stmt.Close(); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }
 
 // WriteGPUMinute folds one poll tick into the minute bucket for at. The daily
@@ -221,6 +236,13 @@ func (db *DB) WriteGPUMinute(ctx context.Context, at time.Time, samples []GPUMin
 	}
 	defer tx.Rollback()
 
+	if err := writeGPUMinutesTx(ctx, tx, minute, samples); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func writeGPUMinutesTx(ctx context.Context, tx *sql.Tx, minute int64, samples []GPUMinuteSample) error {
 	stmt, err := tx.PrepareContext(ctx, gpuSampleUpsert)
 	if err != nil {
 		return err
@@ -242,7 +264,7 @@ func (db *DB) WriteGPUMinute(ctx context.Context, at time.Time, samples []GPUMin
 	if err := stmt.Close(); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }
 
 const gpuIdentityUpsert = "INSERT INTO gpus (uuid, idx, name, pci_bus_id, vram_total_bytes, driver_version, first_seen_ts, last_seen_ts) " +

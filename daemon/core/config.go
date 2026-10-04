@@ -10,105 +10,75 @@ import (
 
 // Config holds daemon configuration loaded from YAML.
 type Config struct {
-	Storage   StorageConfig   `yaml:"storage"`
-	Retention RetentionConfig `yaml:"retention"`
-	Tracing   TracingConfig   `yaml:"tracing"`
+	Storage StorageConfig `yaml:"storage"`
+	Polling PollingConfig `yaml:"polling"`
 }
 
+// StorageConfig controls persistence: what to keep and for how long.
 type StorageConfig struct {
-	ResetOnBoot  bool  `yaml:"reset_on_boot"`
-	MaxSizeBytes int64 `yaml:"max_size_bytes"`
-	MinFreeBytes int64 `yaml:"min_free_bytes"`
-}
-
-type RetentionConfig struct {
 	DayFilesDays  int `yaml:"day_files_days"`
 	ProcessesDays int `yaml:"processes_days"`
 	IncidentsDays int `yaml:"incidents_days"`
-	MaxDumps      int `yaml:"max_dumps"`
 }
 
-// TracingConfig controls the eBPF side. Tracing is on by default but degrades to
-// NVML-only if the kernel refuses the load, since a machine without the right
-// privileges should still report GPU telemetry.
-type TracingConfig struct {
-	// Enabled turns the tracer off entirely. NVML polling is unaffected.
-	Enabled bool `yaml:"enabled"`
-	// RawCapture sends every event to userspace instead of only counting the
-	// hot paths. It makes process exit and sync latency exact, at a real cost
-	// in ring buffer traffic.
-	RawCapture bool `yaml:"raw_capture"`
-	// SyncStallUs is how long one sync may take before it is recorded as a
-	// stall. Zero means the default.
-	SyncStallUs uint32 `yaml:"sync_stall_us"`
-	// ObjectsDir holds the compiled BPF objects. Empty means the default.
-	ObjectsDir string `yaml:"objects_dir"`
-	// PinDir holds the pinned state maps. Empty means the default.
-	PinDir string `yaml:"pin_dir"`
-	// LibcudaPath overrides CUDA library discovery, which is needed on
-	// distributions that install the driver somewhere unusual.
-	LibcudaPath string `yaml:"libcuda_path"`
-	// FixLibcudaPermissions sets the execute bit on the CUDA driver library when
-	// it is missing. eBPF uprobes are matched by inode, so tracing the CUDA API
-	// requires the real library to be readable as executable; distributions ship
-	// it 0644 and the package manager restores that on every driver upgrade.
-	//
-	// This is on by default because the alternative is a daemon that reports
-	// nothing while appearing healthy, and the bit is not a security boundary
-	// for a library already mapped executable in every process that loads it.
-	// Every application is logged, and it can be set false to leave the library
-	// untouched.
-	FixLibcudaPermissions bool `yaml:"fix_libcuda_permissions"`
+// PollingConfig controls how often the NVML hardware is sampled and how
+// often the eBPF kernel counters are drained.
+type PollingConfig struct {
+	// NvmlDbTickMs is the NVML database output interval (ms). When clients are
+	// connected, polling may be faster, but DB messages stay at this cadence.
+	NvmlDbTickMs int `yaml:"nvml_db_tick_ms"`
+	// NvmlSocketTickMs is the NVML socket output interval (ms) while at least one
+	// client is connected. Polling runs as fast as needed to meet both output
+	// cadences; the dispatcher gates DB and socket messages independently.
+	NvmlSocketTickMs int `yaml:"nvml_socket_tick_ms"`
+	// EbpfDrainTickMs is the interval (ms) at which eBPF aggregate maps are
+	// drained into the database. The kernel buffers counts in per-CPU maps;
+	// this tick determines how often they are folded into process/device rows.
+	// Zero means the default (1000ms).
+	EbpfDrainTickMs int `yaml:"ebpf_drain_tick_ms"`
 }
 
 // DefaultConfig returns sensible defaults.
 func DefaultConfig() Config {
 	return Config{
 		Storage: StorageConfig{
-			ResetOnBoot:  true,
-			MaxSizeBytes: 500 << 20, // 500 MB
-			MinFreeBytes: 1 << 30,   // 1 GB
-		},
-		Retention: RetentionConfig{
 			DayFilesDays:  30,
 			ProcessesDays: 90,
 			IncidentsDays: 90,
-			MaxDumps:      20,
 		},
-		Tracing: TracingConfig{
-			Enabled:               true,
-			FixLibcudaPermissions: true,
+		Polling: PollingConfig{
+			NvmlDbTickMs:     2000,
+			NvmlSocketTickMs: 500,
+			EbpfDrainTickMs:  1000,
 		},
 	}
 }
 
 // Validate checks that all config values are within acceptable ranges.
-// It is called once at startup so a bad config file produces a clear error
-// rather than silent misbehaviour deep in the daemon.
 func (c *Config) Validate() error {
-	if c.Storage.MaxSizeBytes < 0 {
-		return fmt.Errorf("storage.max_size_bytes must not be negative")
+	if c.Storage.DayFilesDays < 0 {
+		return fmt.Errorf("storage.day_files_days must not be negative")
 	}
-	if c.Storage.MinFreeBytes < 0 {
-		return fmt.Errorf("storage.min_free_bytes must not be negative")
+	if c.Storage.ProcessesDays < 0 {
+		return fmt.Errorf("storage.processes_days must not be negative")
 	}
-	if c.Retention.DayFilesDays < 0 {
-		return fmt.Errorf("retention.day_files_days must not be negative")
+	if c.Storage.IncidentsDays < 0 {
+		return fmt.Errorf("storage.incidents_days must not be negative")
 	}
-	if c.Retention.ProcessesDays < 0 {
-		return fmt.Errorf("retention.processes_days must not be negative")
+	if c.Polling.NvmlDbTickMs <= 0 {
+		return fmt.Errorf("polling.nvml_db_tick_ms must be greater than zero")
 	}
-	if c.Retention.IncidentsDays < 0 {
-		return fmt.Errorf("retention.incidents_days must not be negative")
+	if c.Polling.NvmlSocketTickMs <= 0 {
+		return fmt.Errorf("polling.nvml_socket_tick_ms must be greater than zero")
 	}
-	if c.Retention.MaxDumps < 0 {
-		return fmt.Errorf("retention.max_dumps must not be negative")
+	if c.Polling.EbpfDrainTickMs < 0 {
+		return fmt.Errorf("polling.ebpf_drain_tick_ms must not be negative")
 	}
 	return nil
 }
 
-// LoadConfig reads the YAML config file and returns a Config.
-// If the file doesn't exist, returns default config.
+// LoadConfig reads the YAML config file at path.
+// If the file does not exist, the default config is returned.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -128,8 +98,7 @@ func LoadConfig(path string) (*Config, error) {
 }
 
 // EnsureConfig writes the default config file at path if it does not already
-// exist, creating the parent directory when needed. An existing file is never
-// modified, so operator edits survive restarts and upgrades.
+// exist. An existing file is never modified.
 func EnsureConfig(path string) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil

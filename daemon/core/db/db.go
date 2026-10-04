@@ -367,11 +367,57 @@ func (db *DB) PruneDayFiles(ctx context.Context, keepDays int, now time.Time) (i
 	return removed, nil
 }
 
+// PruneMeta removes ended process and incident rows outside their retention
+// windows. Non-positive windows disable pruning for that table.
+func (db *DB) PruneMeta(ctx context.Context, now time.Time, processesDays, incidentsDays int) (int64, int64, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if err := db.checkOpen(); err != nil {
+		return 0, 0, err
+	}
+	tx, err := db.meta.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+	var procs, incidents int64
+	if processesDays > 0 {
+		cutoff := now.UTC().AddDate(0, 0, -processesDays).Unix()
+		res, err := tx.ExecContext(ctx, `DELETE FROM procs WHERE end_ts IS NOT NULL AND end_ts < ?`, cutoff)
+		if err != nil {
+			return 0, 0, fmt.Errorf("prune processes: %w", err)
+		}
+		procs, err = res.RowsAffected()
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+	if incidentsDays > 0 {
+		cutoff := now.UTC().AddDate(0, 0, -incidentsDays).Unix()
+		res, err := tx.ExecContext(ctx, `DELETE FROM incidents WHERE last_ts < ?`, cutoff)
+		if err != nil {
+			return 0, 0, fmt.Errorf("prune incidents: %w", err)
+		}
+		incidents, err = res.RowsAffected()
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	return procs, incidents, nil
+}
+
 // RunDayTimer rotates and prunes daily databases at midnight UTC.
 // Run it in its own goroutine; it returns when ctx is cancelled.
 func RunDayTimer(ctx context.Context, database *DB, keepDays int) {
+	RunDayTimerWithMeta(ctx, database, keepDays, 0, 0)
+}
+
+func RunDayTimerWithMeta(ctx context.Context, database *DB, keepDays, processesDays, incidentsDays int) {
 	for {
-		if err := runDayCycle(ctx, database, keepDays); err != nil {
+		if err := runDayCycleWithMeta(ctx, database, keepDays, processesDays, incidentsDays); err != nil {
 			if ctx.Err() != nil {
 				return
 			}
@@ -389,6 +435,10 @@ func RunDayTimer(ctx context.Context, database *DB, keepDays int) {
 }
 
 func runDayCycle(ctx context.Context, database *DB, keepDays int) error {
+	return runDayCycleWithMeta(ctx, database, keepDays, 0, 0)
+}
+
+func runDayCycleWithMeta(ctx context.Context, database *DB, keepDays, processesDays, incidentsDays int) error {
 	now := time.Now().UTC()
 
 	if err := database.RotateDay(ctx, now); err != nil {
@@ -401,6 +451,13 @@ func runDayCycle(ctx context.Context, database *DB, keepDays int) error {
 	}
 	if removed > 0 {
 		log.Printf("day timer: removed %d day file(s) older than %d day(s)", removed, keepDays)
+	}
+	procs, incidents, err := database.PruneMeta(ctx, now, processesDays, incidentsDays)
+	if err != nil {
+		return err
+	}
+	if procs > 0 || incidents > 0 {
+		log.Printf("day timer: pruned %d process row(s) and %d incident row(s)", procs, incidents)
 	}
 	return nil
 }

@@ -309,6 +309,67 @@ func TestHeartbeatAndShutdownRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPruneMetaRetention(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	database, err := db.OpenDB(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	old := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).Unix()
+	now := time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)
+	ended, err := database.UpsertProcess(ctx, db.ProcessIdentity{BootID: "boot", TGID: 1, StartTicks: 1, FirstSeenUnix: old})
+	if err != nil {
+		t.Fatal(err)
+	}
+	open, err := database.UpsertProcess(ctx, db.ProcessIdentity{BootID: "boot", TGID: 2, StartTicks: 2, FirstSeenUnix: old})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.EndProcess(ctx, ended, old, "exit"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.WriteIncident(ctx, db.Incident{Type: db.IncidentXid, DedupeKey: "old", FirstTS: old, LastTS: old}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.WriteIncident(ctx, db.Incident{Type: db.IncidentXid, DedupeKey: "recent", FirstTS: now.Unix(), LastTS: now.Unix()}); err != nil {
+		t.Fatal(err)
+	}
+	procs, incidents, err := database.PruneMeta(ctx, now, 7, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if procs != 1 || incidents != 1 {
+		t.Fatalf("pruned processes=%d incidents=%d, want 1 each", procs, incidents)
+	}
+	meta := openTestSQLite(t, filepath.Join(root, "meta.db"))
+	defer meta.Close()
+	var count int
+	if err := meta.QueryRow(`SELECT COUNT(*) FROM procs WHERE proc_id=?`, ended).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatal("old ended process remains")
+	}
+	if err := meta.QueryRow(`SELECT COUNT(*) FROM procs WHERE proc_id=? AND end_ts IS NULL`, open).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatal("open process was pruned")
+	}
+	if err := meta.QueryRow(`SELECT COUNT(*) FROM incidents WHERE dedupe_key='recent'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatal("recent incident was pruned")
+	}
+	procs, incidents, err = database.PruneMeta(ctx, now, 0, -1)
+	if err != nil || procs != 0 || incidents != 0 {
+		t.Fatalf("non-positive retention should keep all: %d %d %v", procs, incidents, err)
+	}
+}
+
 func openTestSQLite(t *testing.T, path string) *sql.DB {
 	t.Helper()
 	database, err := sql.Open("sqlite", path)

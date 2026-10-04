@@ -116,140 +116,105 @@ Only available with dynamic PTX injection — compiling eBPF bytecode to run
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ USER SPACE (CPU Application / Kubeflow Pod)                                │
-│                                                                             │
-│   GPU Process: python3 / vLLM / llama-server (PID 8842, TID 8843)           │
-│     │                                                                       │
-│     │ 1. Calls cuLaunchKernel(), cuMemAlloc(), cuMemcpyAsync()              │
-│     ▼                                                                       │
-│   ┌──────────────────────────┐                                              │
-│   │        libcuda.so        │ ◄── [uprobes / uretprobes attached here]     │
-│   └────────────┬─────────────┘                                              │
-└────────────────│────────────────────────────────────────────────────────────┘
-                 │
-                 ├───────────────────► LAYER 1: Host Identity (eBPF Context)
-                 │                     • PID: 8842, TID: 8843, comm: "python3"
-                 │                     • K8s cgroup_id (Pod attribution)
-                 │                     • Host CPU Core ID & Boot Timestamp (ns)
-                 │
-                 ├───────────────────► LAYER 2: CUDA Intent & API Parameters
-                 │                     • cuLaunchKernel: gridDim, blockDim, sharedMem
-                 │                     • cuMemAlloc: Requested bytes, devPtr, latency
-                 │                     • cuMemcpyAsync: MB/s, Direction (H2D / D2H)
-                 │                     • cuStreamSynchronize: CPU Stall Duration (µs)
-                 │                     • cuCtxSetCurrent: Context-to-GPU ID mapping
-                 ▼ (ioctl)
+│                           config.yaml (defaults)                            │
+│  ebpf_drain_tick_ms: 1000  nvml_db_tick_ms: 2000  nvml_socket_tick_ms: 500 │
+└──────────────────────────────┬──────────────────────────────────────────────┘
+                               ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ KERNEL SPACE (Linux Kernel & GPU Drivers)                                   │
-│                                                                             │
-│   ┌──────────────────────────┐                                              │
-│   │ nvidia.ko / nvidia-uvm   │ ◄── [kprobes / tracepoints attached here]    │
-│   └────────────┬─────────────┘                                              │
-│                │                                                            │
-│                └───────────────────► LAYER 3: Driver & OS Subsystem State   │
-│                                      • UVM Page Faults (Virtual Addr, Thrashing)│
-│                                      • VRAM Page Evictions (Noisy Neighbors) │
-│                                      • sched_switch: CPU Preemption & Noise │
-│                                      • softirq: Network (NET_RX) / Disk Stalls│
-└────────────────│────────────────────────────────────────────────────────────┘
-                 │ (PCIe Bus Submission)
-                 ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ PHYSICAL GPU HARDWARE & SILICON                                             │
-│                                                                             │
-│   ┌──────────────────────────┐                                              │
-│   │ Physical GPU Hardware    │ ◄── [NVML Poller & Event Waiter (Layer 4)]   │
-│   │ (RTX 3050, H100, etc.)   │     • Compute Util %, VRAM Used, Temp °C,   │
-│   └────────────┬─────────────┘       Power (W), Clock MHz, Xid Fault Codes  │
-│                │                                                            │
-│                └───────────────────► LAYER 5: On-Device Silicon Execution   │
-│                                      (Optional: eGPU / bpftime PTX JIT)     │
-│                                      • %smid (Physical SM ID Heatmap)       │
-│                                      • %ctaid (Block ID) & %laneid (Warp)   │
-│                                      • Instruction Memory Coalescing & GPRs │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                       │
-                                       ▼ (1s Ticker / Async RingBuf Drain)
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ wedjatd DAEMON (Go Background Service, systemd, Root / CAP_BPF)             │
-│                                                                             │
-│  • Reads BPF Per-CPU Map Deltas (Fast Path) & Drains RingBuffer (Errors/Stalls)│
-│  • Polls NVML Stats & Executes Blocking nvmlEventSetWait for Xid Errors    │
-│  • Resolves raw kernel addresses (func) to symbol names via /proc/pid/exe   │
-│  • Computes UTC Anchor: (CLOCK_REALTIME - CLOCK_BOOTTIME)                  │
-└──────────────────────┬──────────────────────────────────┬───────────────────┘
-                        │                                  │
-                        ▼ Writes                           ▼ Pushes
-┌─────────────────────────────────────────┐    ┌──────────────────────────────┐
-│ DISK STORAGE (/var/lib/wedjat)          │    │ UNIX DOMAIN SOCKET           │
-│                                         │    │ /run/wedjat/wedjat.sock      │
-│ • meta.db (SQLite WAL Mode)             │    │ (Live in-progress minute)    │
-│   gpus, procs, proc_gpu, incidents      │    └──────────────┬───────────────┘
-│ • YYYY-MM-DD.db (SQLite WAL Mode)       │                   │
-│   gpu_samples, agg, kernel_events       │                   │ Reads (No Root)
-│   1-minute aggregated time-series rows  │                   │
-└──────────────────────┬──────────────────┘                   │
-                       │                                      │
-                       └──────────────────┬───────────────────┘
-                                          ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ wedjat CLI (Go TUI Client, Non-Root User)                                   │
-│                                                                             │
-│   • `wedjat top`     : Live process table from the Unix socket              │
-│   • `wedjat live`    : Tail the live event stream from the Unix socket      │
-│   • `wedjat history` : Query SQLite directly for past timelines             │
-│                         (works with the daemon stopped)                     │
-└─────────────────────────────────────────────────────────────────────────────┘
+│                              daemon.Run()                                   │
+│  Opens DB, discovers GPUs, starts Source, socket server, and eBPF tracer    │
+└──────────────────────────────┬──────────────────────────────────────────────┘
+                               │
+          ┌────────────────────┴─────────────────────┐
+          │                                          │
+          ▼                                          ▼
+┌───────────────────────────┐            ┌────────────────────────────┐
+│ eBPF tracer               │            │ NVML sampler               │
+│                           │            │                            │
+│ ring buffer: continuous   │            │ PollGPU + PollProcesses    │
+│ aggregate maps: timed     │            │ idle: nvml_db_tick_ms      │
+│ drain (for example 1000ms)│            │ active: faster NVML tick  │
+└─────────────┬─────────────┘            └──────────────┬─────────────┘
+              │ TelemetryMessage                        │ NVML Sample
+              └────────────────────┬────────────────────┘
+                                   ▼
+                      ┌───────────────────────────┐
+                      │ source.Source dispatcher │
+                      │ merges producer channels │
+                      └─────────────┬─────────────┘
+                                    │
+                  ┌─────────────────┴──────────────────┐
+                  │                                    │
+                  │ eBPF all; NVML at DB tick         │ All types while client(s)
+                  ▼                                    │ are connected
+          ┌──────────────────┐                         ▼
+          │ DBChannel        │                ┌────────────────────┐
+          │ NVML + eBPF      │                │ SocketChannel      │
+          └────────┬─────────┘                │ NVML + eBPF        │
+                   │                          └─────────┬──────────┘
+                   ▼                                    ▼
+          ┌──────────────────┐                ┌────────────────────┐
+          │ core.Record()    │                │ Socket broadcaster │
+          │ dispatch by type │                │ JSON to each client│
+          └────────┬─────────┘                └────────────────────┘
+                   │
+                   ▼
+          ┌──────────────────┐
+          │ SQLite           │
+          │ NVML: gpu_minute,│
+          │       process_vram
+          │ eBPF: aggregate, │
+          │       incident   │
+          └──────────────────┘
+
+eBPF process identity and lifecycle operations also use DB methods directly;
+eBPF aggregates and incidents use the unified DBChannel path shown above.
 ```
 
-The daemon is the sole writer. The CLI is a read-only client of both consumers.
+The daemon is the database writer. The socket carries NVML samples, eBPF
+aggregates, and eBPF incidents while clients are connected. NVML DB and socket
+outputs each keep their configured cadence.
 
 **Three architectural properties this diagram encodes:**
 
-1. **Process boundary** — every CUDA operation originates as a standard Linux
-   CPU thread issuing calls to `libcuda.so`. There is no other entry point.
-2. **Fast-path aggregation** — high-frequency calls (`cuLaunchKernel`,
-   `cuMemcpyAsync`) increment `BPF_MAP_TYPE_PERCPU_HASH` counters in kernel
-   space with no context switch to user space.
-3. **Slow-path ring buffer** — only rare events (errors, CPU stalls > 10 ms,
-   process exits) flow through `BPF_MAP_TYPE_RINGBUF`, keeping ring-buffer
-   traffic and disk I/O low.
+1. **Separate producers** — NVML polling and eBPF tracing have independent
+   lifecycles and feed the source dispatcher.
+2. **Type-based DB routing** — `core.Record` sends NVML samples, aggregates,
+   and incidents to their corresponding database write paths.
+3. **Socket filtering and rates** — NVML and eBPF messages enter `SocketChannel`
+   only while clients are connected. The client count controls NVML poll
+   frequency; the dispatcher keeps DB NVML output at `nvml_db_tick_ms` and
+   socket NVML output at `nvml_socket_tick_ms`.
 
 ---
 
 ## 4. The Telemetry Pipeline
 
 ```
-sources                store layer                    consumers
-───────                ───────────                    ─────────
-NVML  ─────────────┐
-eBPF  ─────────────┼──→ [Store] ──→ SQLite (disk) ───→ TUI reads history
-proc  ─────────────┘         │                          (mode=ro, daemon can be dead)
-                             │
-                             └──→ unix socket ────────→ TUI reads live
-                                  (mandatory)            (current minute only)
+NVML ────────────┐
+                 ├──→ Source dispatcher ──→ DBChannel ──→ core.Record ──→ SQLite
+eBPF aggregates ─┤                              │
+eBPF incidents ──┘                              └── All types, if clients
+                                                       └──→ SocketChannel ──→ JSON clients
 ```
 
 Two consumers, one writer.
 
-- **SQLite** is the durable record. History is readable even when the daemon is
-  not running.
-- **The Unix socket** carries the one class of data that exists nowhere else:
-  the **in-progress minute**. The collector's accumulator lives in daemon memory
-  and is destroyed at each flush. The newest database row is up to 60 seconds
-  stale; the socket is the only path to a live "current GPU state".
+- **SQLite** receives NVML samples and eBPF aggregate/incident messages through
+  the daemon's DB channel and writer.
+- **The Unix socket** broadcasts NVML samples and eBPF aggregates/incidents
+  while clients are connected.
 
 | Question | Source |
 | :--- | :--- |
 | "What did my job do at 03:00 last night?" | SQLite |
 | "What is the GPU doing right now?" | Unix socket |
-| "Did that 200 ms kernel ever run?" | SQLite, via `kernel_events` |
+| "Did that CUDA operation get counted?" | SQLite, via aggregate telemetry |
 
 ### The store is a faithful sink
 
-The store does not filter, sample, or discard. Every field it is handed is
-persisted verbatim inside a single transaction. Decisions about what to collect
-belong to the collector, not the store.
+The source channels use bounded, non-blocking sends. A full channel can drop a
+message so a slow consumer does not block its producer.
 
 ---
 
@@ -261,18 +226,20 @@ graph TD
     B --> C[Load configuration]
     C --> D[Open SQLite databases]
     D --> E[Initialize NVML and discover GPUs]
-    E --> F[Start Unix socket server]
-    F --> G[Start eBPF tracer when available]
-    G --> H[Poll and record snapshots]
-    H --> I[Heartbeat and tracer statistics]
+    E --> F[Start Source and NVML sampler]
+    F --> G[Start Unix socket server]
+    G --> H[Start eBPF tracer when available]
+    H --> I[Record DBChannel messages]
+    I --> J[Heartbeat and tracer statistics]
 ```
 
 | Package | Responsibility |
 | :--- | :--- |
 | `core/db` | Metadata and daily SQLite databases; process and GPU identity; aggregation; incidents; retention |
-| `core/nvml` | CGO bridge to NVML; GPU and process polling API |
-| `core/ebpf` | BPF object loading and attachment; event consumption; counter draining |
-| `core` | Snapshot construction; database recording; configuration; Unix socket server |
+| `core/source/nvml` | CGO bridge to NVML and adaptive GPU/process sampler |
+| `core/source/ebpf` | BPF object loading and attachment; event consumption; counter draining |
+| `core/source` | Typed telemetry messages, producer dispatcher, DB/socket channels |
+| `core` | Database writer, configuration, Unix socket server |
 
 ---
 
@@ -287,11 +254,12 @@ graph TD
    completes cleanly.
 6. Start the daily database retention timer.
 7. Initialize NVML and register all discovered GPU identities.
-8. Start the Unix socket server. Clients receive the latest cached snapshot as
-   JSON.
-9. Attempt to start the eBPF tracer. Failure is logged; NVML polling continues
-   regardless.
-10. Poll GPU and process state every 2 seconds; write heartbeats every 10 seconds.
+8. Start the source dispatcher and NVML sampler.
+9. Start the Unix socket server; client connect/disconnect events change the
+   NVML sampler's polling interval.
+10. Attempt to start the eBPF tracer with the source dispatcher. Failure is
+    logged; NVML polling continues regardless.
+11. Record messages from `DBChannel`; write heartbeats every 10 seconds.
 
 ---
 
@@ -300,9 +268,9 @@ graph TD
 On `SIGINT` or `SIGTERM`:
 
 1. Mark the run as a clean shutdown in `daemon_state`.
-2. Stop the polling and heartbeat loops.
-3. Stop the eBPF session and NVML sources.
-4. Stop the Unix socket server and remove its socket file.
+2. Stop the eBPF session.
+3. Stop the Unix socket server and remove its socket file.
+4. Cancel the source dispatcher and NVML sampler.
 5. Stop the daily retention timer; checkpoint and close SQLite.
 6. Release the process lock.
 

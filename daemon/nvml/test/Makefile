@@ -21,6 +21,7 @@ NVML_CFLAGS := -I$(NVML_INCLUDE) -Wno-deprecated-declarations
 
 NVML_LIB_DIR ?=
 NVML_LIBS    := $(if $(NVML_LIB_DIR),-L$(NVML_LIB_DIR)) -lnvidia-ml -ldl
+NVCC         ?= $(if $(wildcard $(CUDA_HOME)/bin/nvcc),$(CUDA_HOME)/bin/nvcc,$(shell command -v nvcc 2>/dev/null))
 
 BUILD := build
 
@@ -44,19 +45,22 @@ $(BUILD)/xid_test: xid_test.c $(NVML_SRC_DIR)/xid.c $(NVML_SRC_DIR)/xid.h $(NVML
 build: $(BUILD)/poller_test $(BUILD)/xid_test
 
 build-inputs:
-	$(MAKE) -C $(KERNELS_DIR) build
+	@if [ -n "$(NVCC)" ]; then \
+	  $(MAKE) -C $(KERNELS_DIR) build NVCC="$(NVCC)"; \
+	else \
+	  echo "SKIP CUDA fixture build (nvcc not found; GPU process polling test will be skipped)"; \
+	fi
 
 run-poller-test: build build-inputs
-	@test -x "$(KERNELS_BUILD)/$(PROGRAM)" || { \
-		echo "missing fixture: $(KERNELS_BUILD)/$(PROGRAM)" >&2; \
-		echo "  run: make -C kernels_to_trace build" >&2; \
-		exit 2; \
-	}
-	@echo "RUN  poller_test PROGRAM=$(PROGRAM)"
-	@$(BUILD)/poller_test $(PROGRAM); rc=$$?; \
+	@if [ ! -x "$(KERNELS_BUILD)/$(PROGRAM)" ]; then \
+	  echo "SKIP poller_test (fixture $(KERNELS_BUILD)/$(PROGRAM) unavailable; install CUDA compiler nvcc to build it)"; \
+	else \
+	  echo "RUN  poller_test PROGRAM=$(PROGRAM)"; \
+	  $(BUILD)/poller_test $(PROGRAM); rc=$$?; \
 	  if   [ $$rc -eq 0  ]; then echo "PASS poller_test"; \
 	  elif [ $$rc -eq 77 ]; then echo "SKIP poller_test (NVML/device capability unavailable)"; \
-	  else echo "FAIL poller_test (exit $$rc)"; exit 1; fi
+	  else echo "FAIL poller_test (exit $$rc)"; exit 1; fi; \
+	fi
 
 run-xid-test: build
 	@echo "RUN  xid_test"
@@ -74,7 +78,7 @@ run-xid-test-manual: build
 	$(BUILD)/xid_test --manual
 
 test: run-poller-test run-xid-test
-	@echo "all NVML automated tests passed"
+	@echo "NVML automated test targets completed"
 	@echo "(xid coverage is plumbing-only — see README for manual fault test)"
 
 clean:

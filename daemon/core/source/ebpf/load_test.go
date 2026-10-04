@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/Ebraam-Ashraf/wedjat/daemon/core/ebpf"
+	sourceebpf "github.com/Ebraam-Ashraf/wedjat/daemon/core/source/ebpf"
 )
 
 // requiredObjects lists the BPF object file stems that ObjectsExist checks.
@@ -21,7 +21,7 @@ func TestObjectsExistRequiresCompleteObjectSet(t *testing.T) {
 	dir := t.TempDir()
 
 	// Empty directory must be incomplete.
-	if ebpf.ObjectsExist(dir) {
+	if sourceebpf.ObjectsExist(dir) {
 		t.Fatal("empty object directory reported as complete")
 	}
 
@@ -31,7 +31,7 @@ func TestObjectsExistRequiresCompleteObjectSet(t *testing.T) {
 		if err := os.WriteFile(path, []byte("test"), 0644); err != nil {
 			t.Fatalf("write %s: %v", name, err)
 		}
-		complete := ebpf.ObjectsExist(dir)
+		complete := sourceebpf.ObjectsExist(dir)
 		isLast := i == len(requiredObjects)-1
 		if complete && !isLast {
 			t.Fatalf("ObjectsExist returned true after adding only %d/%d objects", i+1, len(requiredObjects))
@@ -51,7 +51,7 @@ func TestObjectsExistRejectsDirectoryWithMissingFile(t *testing.T) {
 			t.Fatalf("write partial object set: %v", err)
 		}
 	}
-	if ebpf.ObjectsExist(dir) {
+	if sourceebpf.ObjectsExist(dir) {
 		t.Fatalf("partial object directory (%d of %d objects) reported as complete",
 			len(requiredObjects)-1, len(requiredObjects))
 	}
@@ -62,7 +62,7 @@ func TestObjectsExistRejectsUnrelatedFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "not-a-bpf-object.txt"), nil, 0644); err != nil {
 		t.Fatalf("write unrelated file: %v", err)
 	}
-	if ebpf.ObjectsExist(dir) {
+	if sourceebpf.ObjectsExist(dir) {
 		t.Fatal("directory with no complete BPF object set reported as ready")
 	}
 }

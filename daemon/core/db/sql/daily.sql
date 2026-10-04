@@ -33,6 +33,5 @@ CREATE TABLE IF NOT EXISTS agg (
     uvm_faults INTEGER NOT NULL DEFAULT 0,
     uvm_evicts INTEGER NOT NULL DEFAULT 0,
     errors INTEGER NOT NULL DEFAULT 0,
-    vram_used_bytes INTEGER,
     PRIMARY KEY (ts, proc_id, gpu_id)
 ) WITHOUT ROWID;

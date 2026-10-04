@@ -12,62 +12,75 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Ebraam-Ashraf/wedjat/daemon/core/nvml"
+	"github.com/Ebraam-Ashraf/wedjat/daemon/core/source"
 )
 
-// acceptRetryDelay paces the accept loop after an error so a persistent
-// failure cannot spin the CPU.
+// acceptRetryDelay paces the accept loop after a transient error so a
+// persistent failure cannot spin the CPU.
 const acceptRetryDelay = 100 * time.Millisecond
 
-// Snapshot represents the current live state of GPUs and processes.
-type Snapshot struct {
-	UnixNano   int64                `json:"unix_nano"`
-	MinuteUnix int64                `json:"minute_unix"`
-	GPUs       []nvml.GPUSample     `json:"gpus"`
-	Processes  []nvml.ProcessSample `json:"processes"`
-	// ProcessesComplete is false when at least one device failed to report its
-	// process list. Consumers must not treat the process list as the full set
-	// of running GPU processes when it is false.
-	ProcessesComplete bool `json:"processes_complete"`
+// writeDeadline is the maximum time a single write may take before the client
+// is considered gone and disconnected.
+const writeDeadline = 5 * time.Second
+
+// perClientBufSize is the number of pre-encoded messages that can be queued
+// per client. A slow client loses messages before it stalls others.
+const perClientBufSize = 8
+
+// wireMsg is the JSON envelope sent to every connected client.
+type wireMsg struct {
+	Type      string          `json:"type"`
+	Timestamp int64           `json:"timestamp_unix_nano"`
+	Data      json.RawMessage `json:"data"`
 }
 
-// SnapshotFunc is a function that returns the current snapshot.
-type SnapshotFunc func() Snapshot
-
-// SocketServer broadcasts live telemetry to connected clients.
-type SocketServer struct {
-	path        string
-	getSnapshot SnapshotFunc
-	listener    net.Listener
-	ctx         context.Context
-	cancel      context.CancelFunc
-	wg          sync.WaitGroup
+// encodeMsg serialises typeName + tsNano + data into a single JSON line.
+func encodeMsg(typeName string, tsNano int64, data any) ([]byte, error) {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(wireMsg{
+		Type:      typeName,
+		Timestamp: tsNano,
+		Data:      raw,
+	})
 }
 
 // SocketOptions configures the listening socket.
 type SocketOptions struct {
-	// Group, when non-empty, is the group that owns the socket file. The socket
-	// is chmod 0660, so only the daemon's uid and members of this group can
-	// connect. Telemetry names processes and their GPU memory, so the socket
-	// must not be readable by every local user.
+	// Group, when non-empty, is the UNIX group that owns the socket file.
+	// The socket is chmod 0660, so only the daemon's uid and members of this
+	// group can connect.
 	//
-	// When Group is empty, no chown is performed: the socket is owned by the
-	// process's uid and primary gid. This is the right default for development
-	// (where you run as yourself) but should always be set in production.
+	// If the group cannot be resolved a warning is logged and the socket
+	// continues without group restriction rather than aborting the daemon.
 	Group string
 }
 
-// StartSocket creates and starts a unix socket server that broadcasts snapshots.
-func StartSocket(path string, getSnapshot SnapshotFunc) (*SocketServer, error) {
-	return StartSocketWithOptions(path, getSnapshot, SocketOptions{})
+// SocketServer broadcasts live GPU telemetry to connected clients.
+type SocketServer struct {
+	path     string
+	sock     source.Chans
+	listener net.Listener
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+
+	mu      sync.Mutex
+	clients map[net.Conn]chan []byte
+}
+
+// StartSocket creates and starts a unix socket server using the default options.
+func StartSocket(path string, sock source.Chans) (*SocketServer, error) {
+	return StartSocketWithOptions(path, sock, SocketOptions{})
 }
 
 // StartSocketWithOptions is StartSocket with explicit ownership settings.
-func StartSocketWithOptions(path string, getSnapshot SnapshotFunc, options SocketOptions) (*SocketServer, error) {
-	// Remove stale socket file if it exists
+func StartSocketWithOptions(path string, sock source.Chans, options SocketOptions) (*SocketServer, error) {
+	// Remove a stale socket file from a previous run.
 	os.Remove(path)
 
-	// Listen on unix socket
 	listener, err := net.Listen("unix", path)
 	if err != nil {
 		return nil, fmt.Errorf("listen on socket: %w", err)
@@ -80,43 +93,43 @@ func StartSocketWithOptions(path string, getSnapshot SnapshotFunc, options Socke
 		os.Remove(path)
 		return nil, fmt.Errorf("chmod socket: %w", err)
 	}
+
 	if options.Group != "" {
 		gid, err := lookupGroup(options.Group)
 		if err != nil {
-			listener.Close()
-			os.Remove(path)
-			return nil, fmt.Errorf("resolve socket group %q: %w", options.Group, err)
-		}
-		if err := os.Chown(path, -1, gid); err != nil {
-			listener.Close()
-			os.Remove(path)
-			return nil, fmt.Errorf("chown socket: %w", err)
+			log.Printf("socket: group %q could not be resolved (%v); "+
+				"socket will be accessible only by the daemon's uid. "+
+				"Ensure the group exists for a production install.", options.Group, err)
+		} else if err := os.Chown(path, -1, gid); err != nil {
+			log.Printf("socket: could not chown socket to group %q (%v); "+
+				"socket will be accessible only by the daemon's uid.", options.Group, err)
 		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	server := &SocketServer{
-		path:        path,
-		getSnapshot: getSnapshot,
-		listener:    listener,
-		ctx:         ctx,
-		cancel:      cancel,
+		path:     path,
+		sock:     sock,
+		listener: listener,
+		ctx:      ctx,
+		cancel:   cancel,
+		clients:  make(map[net.Conn]chan []byte),
 	}
 
-	// Start accept loop
-	server.wg.Add(1)
+	server.wg.Add(2)
 	go server.acceptLoop()
+	go server.broadcastLoop()
 
 	return server, nil
 }
 
-// lookupGroup resolves a group name to its numeric id.
+// lookupGroup resolves a group name to its numeric GID.
 func lookupGroup(name string) (int, error) {
-	gid, err := user.LookupGroup(name)
+	g, err := user.LookupGroup(name)
 	if err != nil {
 		return 0, err
 	}
-	return strconv.Atoi(gid.Gid)
+	return strconv.Atoi(g.Gid)
 }
 
 // acceptLoop accepts new client connections.
@@ -131,57 +144,162 @@ func (s *SocketServer) acceptLoop() {
 				return
 			default:
 			}
-			// Without a pause a persistent error, such as a descriptor
-			// shortage, turns this into a busy loop that burns a core.
 			log.Printf("socket: accept error: %v", err)
 			time.Sleep(acceptRetryDelay)
 			continue
 		}
 
-		// Handle client in separate goroutine
-		s.wg.Add(1)
-		go s.handleClient(conn)
+		// Per-client buffered channel; sized so a slow client loses messages
+		// before it can block the broadcaster.
+		clientCh := make(chan []byte, perClientBufSize)
+
+		s.mu.Lock()
+		s.clients[conn] = clientCh
+		s.mu.Unlock()
+
+		source.Clients.Add(1)
+
+		s.wg.Add(2)
+		go s.readClient(conn)
+		go s.writeClient(conn, clientCh)
 	}
 }
 
-// handleClient broadcasts snapshots to a single client.
-func (s *SocketServer) handleClient(conn net.Conn) {
+// readClient blocks on a single Read to detect client disconnection.
+// It does not loop; one read is enough to notice an EOF or error.
+func (s *SocketServer) readClient(conn net.Conn) {
 	defer s.wg.Done()
-	defer conn.Close()
+	defer s.removeClient(conn)
 
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+	buf := make([]byte, 4096)
+	conn.Read(buf) // blocks until disconnect or error
+}
 
-	encoder := json.NewEncoder(conn)
+// writeClient drains the per-client channel and writes each encoded message
+// to the connection. It exits when the channel is closed or on a write error.
+func (s *SocketServer) writeClient(conn net.Conn, ch chan []byte) {
+	defer s.wg.Done()
+	defer s.removeClient(conn)
 
 	for {
 		select {
 		case <-s.ctx.Done():
 			return
-
-		case <-ticker.C:
-			snapshot := s.getSnapshot()
-
-			// A write deadline prevents a stalled or zombie client from
-			// holding this goroutine open indefinitely. If the client cannot
-			// drain the connection within 5 seconds we treat it as gone and
-			// close it; the next connect will start a fresh goroutine.
-			if err := conn.SetWriteDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		case msg, ok := <-ch:
+			if !ok {
 				return
 			}
-
-			if err := encoder.Encode(snapshot); err != nil {
-				// Client disconnected or too slow
+			if err := conn.SetWriteDeadline(time.Now().Add(writeDeadline)); err != nil {
+				return
+			}
+			if _, err := conn.Write(msg); err != nil {
 				return
 			}
 		}
 	}
 }
 
-// Stop stops the socket server and closes all connections.
+// removeClient closes and deregisters a client connection.
+func (s *SocketServer) removeClient(conn net.Conn) {
+	s.mu.Lock()
+	_, exists := s.clients[conn]
+	if exists {
+		delete(s.clients, conn)
+	}
+	s.mu.Unlock()
+
+	if exists {
+		source.Clients.Add(-1)
+		conn.Close()
+	}
+}
+
+// broadcastLoop selects over all five source channels, encodes each message
+// once, and offers it to every connected client's per-client channel.
+// Slow clients lose messages; they never stall others.
+func (s *SocketServer) broadcastLoop() {
+	defer s.wg.Done()
+
+	for {
+		var msg []byte
+		var err error
+
+		select {
+		case <-s.ctx.Done():
+			return
+
+		case gpus, ok := <-s.sock.GPU:
+			if !ok {
+				return
+			}
+			if len(gpus) == 0 {
+				continue
+			}
+			ts := gpus[0].TsNano
+			msg, err = encodeMsg("gpu", ts, gpus)
+
+		case pl, ok := <-s.sock.Procs:
+			if !ok {
+				return
+			}
+			msg, err = encodeMsg("procs", pl.TsNano, pl)
+
+		case xid, ok := <-s.sock.Xid:
+			if !ok {
+				return
+			}
+			msg, err = encodeMsg("xid", xid.TsNano, xid)
+
+		case agg, ok := <-s.sock.Agg:
+			if !ok {
+				return
+			}
+			if len(agg) == 0 {
+				continue
+			}
+			ts := agg[0].TsNano
+			msg, err = encodeMsg("agg", ts, agg)
+
+		case ev, ok := <-s.sock.Event:
+			if !ok {
+				return
+			}
+			msg, err = encodeMsg("event", int64(ev.TsNano), ev)
+		}
+
+		if err != nil {
+			log.Printf("socket: encode message: %v", err)
+			continue
+		}
+
+		// Append newline so readers can use bufio.Scanner.
+		msg = append(msg, '\n')
+
+		s.mu.Lock()
+		for _, ch := range s.clients {
+			select {
+			case ch <- msg:
+			default:
+				// Client is too slow; drop this message for them.
+			}
+		}
+		s.mu.Unlock()
+	}
+}
+
+// Stop shuts down the socket server and waits for all goroutines to exit.
 func (s *SocketServer) Stop() error {
 	s.cancel()
 	s.listener.Close()
+
+	s.mu.Lock()
+	for conn, ch := range s.clients {
+		close(ch)
+		conn.Close()
+		delete(s.clients, conn)
+	}
+	s.mu.Unlock()
+
 	s.wg.Wait()
 	os.Remove(s.path)
 	return nil

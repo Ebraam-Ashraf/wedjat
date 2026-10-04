@@ -13,6 +13,7 @@ import (
 const (
 	EndReboot   = "reboot"
 	EndVanished = "vanished"
+	EndExit     = "exit"
 )
 
 // EndProcess marks a process as finished. It reports how many rows it closed,
@@ -31,12 +32,33 @@ func (db *DB) EndProcess(ctx context.Context, procID, endTS int64, reason string
 		return 0, err
 	}
 
-	result, err := db.meta.ExecContext(ctx,
-		`UPDATE procs SET end_ts = ?, end_reason = ?
+	return endProcessTx(ctx, db.meta, processEnd{procID: procID, endTS: endTS, reason: reason})
+}
+
+func (db *DB) EndProcessStatus(ctx context.Context, procID, endTS int64, reason string, exitCode, termSignal *int) (int64, error) {
+	if procID < 0 || endTS < 0 || !validEndReason(reason) {
+		return 0, errors.New("db: invalid process exit")
+	}
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if err := db.checkOpen(); err != nil {
+		return 0, err
+	}
+	return endProcessTx(ctx, db.meta, processEnd{procID: procID, endTS: endTS, reason: reason, exitCode: exitCode, termSig: termSignal})
+}
+
+type execRower interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func endProcessTx(ctx context.Context, tx execRower, end processEnd) (int64, error) {
+	result, err := tx.ExecContext(ctx,
+		`UPDATE procs SET end_ts = ?, end_reason = ?, exit_code = ?, term_signal = ?
 		 WHERE proc_id = ? AND end_ts IS NULL`,
-		endTS, reason, procID)
+		end.endTS, end.reason, end.exitCode, end.termSig, end.procID)
 	if err != nil {
-		return 0, fmt.Errorf("end process %d: %w", procID, err)
+		return 0, fmt.Errorf("end process %d: %w", end.procID, err)
 	}
 	return result.RowsAffected()
 }
@@ -59,12 +81,15 @@ func (db *DB) CloseProcessesNotSeen(ctx context.Context, bootID string, seen []i
 		return 0, err
 	}
 
+	return closeProcessesNotSeenTx(ctx, db.meta, bootID, seen, endTS)
+}
+
+func closeProcessesNotSeenTx(ctx context.Context, tx execRower, bootID string, seen []int64, endTS int64) (int64, error) {
 	present := make(map[int64]struct{}, len(seen))
 	for _, procID := range seen {
 		present[procID] = struct{}{}
 	}
-
-	rows, err := db.meta.QueryContext(ctx,
+	rows, err := tx.QueryContext(ctx,
 		`SELECT proc_id FROM procs WHERE boot_id = ? AND end_ts IS NULL`, bootID)
 	if err != nil {
 		return 0, fmt.Errorf("list running processes: %w", err)
@@ -95,7 +120,7 @@ func (db *DB) CloseProcessesNotSeen(ctx context.Context, bootID string, seen []i
 	statement := `UPDATE procs SET end_ts = ?, end_reason = ? WHERE proc_id = ? AND end_ts IS NULL`
 	var closed int64
 	for _, procID := range stale {
-		result, err := db.meta.ExecContext(ctx, statement, endTS, EndVanished, procID)
+		result, err := tx.ExecContext(ctx, statement, endTS, EndVanished, procID)
 		if err != nil {
 			return closed, fmt.Errorf("close vanished process %d: %w", procID, err)
 		}

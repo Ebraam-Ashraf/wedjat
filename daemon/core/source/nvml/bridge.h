@@ -82,4 +82,16 @@ struct collector_proc_list {
 
 void collector_snapshot_procs(const char *uuid, struct collector_proc_list *list);
 
+struct collector_xid_event {
+    uint64_t timestamp_ns;
+    unsigned int device_index;
+    char device_uuid[WEDJAT_UUID_LEN];
+    unsigned long long nvml_event_type;
+    unsigned long long nvml_event_data;
+};
+
+void *collector_xid_create(void);
+int collector_xid_wait(void *set, struct collector_xid_event *event_out, unsigned int timeout_ms);
+void collector_xid_destroy(void *set);
+
 #endif

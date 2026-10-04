@@ -10,9 +10,6 @@ struct xid_event {
     char device_uuid[96];
     unsigned long long nvml_event_type;
     unsigned long long nvml_event_data;
-    /* PID of the process that triggered the Xid, if available from NVML.
-     * Zero when NVML does not provide it (older driver / event type). */
-    unsigned int associated_pid;
 };
 
 struct xid_event_set {
@@ -20,7 +17,6 @@ struct xid_event_set {
     int set_created;
     nvmlReturn_t nvml_error; /* NVML_SUCCESS (0) when no error */
     nvmlEventSet_t set;
-    char (*device_uuids)[96];
     unsigned int device_count;
 };
 
@@ -34,7 +30,6 @@ enum xid_wait_result {
 struct xid_event_set *xid_event_set_create(void);
 int xid_event_set_wait(struct xid_event_set *set, struct xid_event *event_out,
                        unsigned int timeout_ms);
-int xid_handle_event(const struct xid_event *event);
 void xid_event_set_destroy(struct xid_event_set *set);
 
 #endif

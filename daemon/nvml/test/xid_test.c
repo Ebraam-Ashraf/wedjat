@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/types.h>
 
 #include "../xid.h"
 
@@ -29,7 +30,7 @@ static int test_xid_event_plumbing(int manual_mode)
         return FAIL;
     }
 
-    printf("TEST Xid event set registered for %u GPU(s)\n", set->device_count);
+    printf("TEST Xid event set registered for %u enumerated GPU(s)\n", set->device_count);
     struct xid_event event;
     int result;
     do {
@@ -62,6 +63,12 @@ static int test_xid_event_plumbing(int manual_mode)
         xid_event_set_destroy(set);
         return FAIL;
     }
+    if (event.nvml_event_type != nvmlEventTypeXidCriticalError) {
+        fprintf(stderr, "FAIL: unexpected NVML event type %llu\n",
+                event.nvml_event_type);
+        xid_event_set_destroy(set);
+        return FAIL;
+    }
     printf("CAPTURED Xid: ts=%llu device=%u uuid=%s type=%llu xid=%llu\n",
            (unsigned long long)event.timestamp_ns, event.device_index,
            event.device_uuid, event.nvml_event_type, event.nvml_event_data);
@@ -76,8 +83,8 @@ int main(int argc, char **argv)
         if (strcmp(argv[i], "--manual") == 0)
             manual = 1;
 
-    if (access("/dev/nvidiactl", F_OK) != 0) {
-        printf("SKIP: no NVIDIA device\n");
+    if (geteuid() != 0 || access("/dev/nvidiactl", F_OK) != 0) {
+        printf("SKIP: root and an NVIDIA device are required\n");
         return SKIP;
     }
     nvmlReturn_t result = nvmlInit();

@@ -21,27 +21,14 @@ static nvmlReturn_t register_all_devices(struct xid_event_set *set)
     if (result != NVML_SUCCESS)
         return result;
 
-    free(set->device_uuids);
-    set->device_uuids = NULL;
     set->device_count = 0;
     if (count == 0)
         return NVML_ERROR_NOT_FOUND;
 
-    set->device_uuids = calloc(count, sizeof(*set->device_uuids));
-    if (!set->device_uuids)
-        return NVML_ERROR_MEMORY;
-
     unsigned int registered = 0;
     for (unsigned int index = 0; index < count; index++) {
         nvmlDevice_t device;
-        char uuid[96] = {};
-
         result = NVML_CALL(nvmlDeviceGetHandleByIndex, index, &device);
-        if (result != NVML_SUCCESS) {
-            keep_first_error(&set->nvml_error, result);
-            continue;
-        }
-        result = NVML_CALL(nvmlDeviceGetUUID, device, uuid, sizeof(uuid));
         if (result != NVML_SUCCESS) {
             keep_first_error(&set->nvml_error, result);
             continue;
@@ -52,8 +39,6 @@ static nvmlReturn_t register_all_devices(struct xid_event_set *set)
             keep_first_error(&set->nvml_error, result);
             continue;
         }
-        snprintf(set->device_uuids[registered], sizeof(set->device_uuids[registered]),
-                 "%s", uuid);
         registered++;
     }
 
@@ -107,24 +92,10 @@ static nvmlReturn_t recreate_set(struct xid_event_set *set)
         return result;
     set->set_created = 1;
 
-    unsigned int registered = 0;
-    for (unsigned int i = 0; i < set->device_count; i++) {
-        nvmlDevice_t device;
-        result = NVML_CALL(nvmlDeviceGetHandleByUUID, set->device_uuids[i], &device);
-        if (result != NVML_SUCCESS) {
-            keep_first_error(&set->nvml_error, result);
-            continue;
-        }
-        result = NVML_CALL(nvmlDeviceRegisterEvents, device,
-                           nvmlEventTypeXidCriticalError, set->set);
-        if (result == NVML_SUCCESS)
-            registered++;
-        else
-            keep_first_error(&set->nvml_error, result);
-    }
-
-    set->valid = registered > 0;
-    return set->valid ? NVML_SUCCESS : NVML_ERROR_NOT_SUPPORTED;
+    result = register_all_devices(set);
+    set->valid = result == NVML_SUCCESS;
+    keep_first_error(&set->nvml_error, result);
+    return result;
 }
 
 static int xid_event_set_wait_locked(struct xid_event_set *set,
@@ -190,11 +161,6 @@ int xid_event_set_wait(struct xid_event_set *set, struct xid_event *event_out,
     return result;
 }
 
-int xid_handle_event(const struct xid_event *event)
-{
-    return event ? XID_WAIT_OK : XID_WAIT_ERROR;
-}
-
 void xid_event_set_destroy(struct xid_event_set *set)
 {
     if (!set)
@@ -203,7 +169,6 @@ void xid_event_set_destroy(struct xid_event_set *set)
     poller_nvml_lock();
     if (set->set_created)
         NVML_CALL(nvmlEventSetFree, set->set);
-    free(set->device_uuids);
     free(set);
     poller_nvml_unlock();
 }
