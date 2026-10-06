@@ -41,12 +41,21 @@ jobs:
           
       - name: Install BPFTool
         run: |
-          sudo apt-get install -y bpftool || true
+          sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-azure || true
           if ! bpftool version >/dev/null 2>&1; then
-            BPFTOOL_PATH="$(find /usr/lib/linux-tools -type f -name bpftool -executable | sort -V | tail -n 1)"
-            test -n "$BPFTOOL_PATH"
+            BPFTOOL_PATH="$(find -L /usr/lib/linux-tools /usr/lib/linux-tools-* -type f -name bpftool -print 2>/dev/null | sort -V | tail -n 1 || true)"
+            if [ -z "$BPFTOOL_PATH" ]; then
+              BPFTOOL_PATH="$(dpkg -L linux-tools-common linux-tools-generic linux-tools-azure 2>/dev/null | grep '/usr/lib/linux-tools.*/bpftool$' | sort -V | tail -n 1 || true)"
+            fi
+            if [ -z "$BPFTOOL_PATH" ]; then
+              echo "No usable bpftool binary found. Installed candidates:"
+              dpkg -l 'linux-tools*' 2>/dev/null || true
+              find -L /usr -type f -name bpftool -print 2>/dev/null || true
+              exit 1
+            fi
             sudo ln -sf "$BPFTOOL_PATH" /usr/local/bin/bpftool
           fi
+          hash -r
           bpftool version
 
       - name: Configure CUDA toolkit path
