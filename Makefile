@@ -129,7 +129,11 @@ release: build
 ci:
 	cleanup() {
 		status=$$?;
-		$(MAKE) -C "$(DAEMON_DIR)" clean || true;
+		if [ "$$(id -u)" -eq 0 ]; then
+			$(MAKE) -C "$(DAEMON_DIR)" clean || true;
+		else
+			sudo $(MAKE) -C "$(DAEMON_DIR)" clean || true;
+		fi
 		rm -rf "$(FRONTEND_DIR)/dist" "$(DIST_DIR)";
 		exit $$status;
 	}
