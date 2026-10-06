@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   build-and-release:
     runs-on: ubuntu-22.04
@@ -15,7 +18,16 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: daemon/go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            ui/web/package-lock.json
+            ui/web/frontend/package-lock.json
 
       - name: Install Dependencies
         run: |
@@ -30,17 +42,16 @@ jobs:
             sudo apt-get install -y bpftool
           fi
 
-      - name: Install NVIDIA Stub
-        run: |
-          sudo apt-get install -y nvidia-cuda-toolkit
-          
       - name: Build Release Artifacts
         run: |
-          make release
+          make release GOARCH=amd64
           
       - name: Upload Release to GitHub
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/wedjat-linux-amd64.tar.gz
+          files: |
+            dist/wedjat-linux-amd64.tar.gz
+            dist/wedjat-linux-amd64.tar.gz.sha256
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
