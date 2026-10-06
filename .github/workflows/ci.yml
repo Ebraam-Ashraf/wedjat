@@ -33,10 +33,14 @@ jobs:
 
       - name: Install bpftool command
         run: |
+          sudo apt-get install -y "linux-tools-$(uname -r)" || true
           sudo apt-get install -y bpftool || true
           if ! bpftool version >/dev/null 2>&1; then
-            BPFTOOL_PATH="$(find /usr/lib/linux-tools -type f -name bpftool -executable | sort -V | tail -n 1)"
-            test -n "$BPFTOOL_PATH"
+            BPFTOOL_PATH="$(find /usr/lib/linux-tools -type f -name bpftool -executable 2>/dev/null | sort -V | tail -n 1)"
+            if [ -z "$BPFTOOL_PATH" ]; then
+              echo "bpftool binary not found after installation attempts" >&2
+              exit 1
+            fi
             sudo ln -sf "$BPFTOOL_PATH" /usr/local/bin/bpftool
           fi
           bpftool version
