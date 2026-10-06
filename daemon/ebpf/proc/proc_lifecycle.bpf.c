@@ -5,8 +5,7 @@
 #include "common.h"
 
 SEC("tracepoint/sched/sched_process_exec")
-int trace_sched_process_exec(struct trace_event_raw_sched_process_exec *ctx)
-{
+int trace_sched_process_exec(struct trace_event_raw_sched_process_exec *ctx) {
     u64 pid_tgid = bpf_get_current_pid_tgid();
     u32 tgid = (u32)(pid_tgid >> 32);
     struct process_seen_val *seen = bpf_map_lookup_elem(&seen_processes, &tgid);
@@ -26,11 +25,10 @@ int trace_sched_process_exec(struct trace_event_raw_sched_process_exec *ctx)
 }
 
 SEC("tracepoint/sched/sched_process_exit")
-int trace_sched_process_exit(struct trace_event_raw_sched_process_template *ctx)
-{
+int trace_sched_process_exit(struct trace_event_raw_sched_process_template *ctx) {
     u64 pid_tgid = bpf_get_current_pid_tgid();
     u32 tgid = (u32)(pid_tgid >> 32);
-    struct thread_key thread = { .pid_tgid = pid_tgid };
+    struct thread_key thread = {.pid_tgid = pid_tgid};
     struct process_seen_val *seen = bpf_map_lookup_elem(&seen_processes, &tgid);
     struct task_struct *task;
     struct signal_struct *signal;

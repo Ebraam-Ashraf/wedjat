@@ -2,7 +2,7 @@
 // The daemon sends no snapshot on connect, so all slices start empty and remain
 // empty until a real message arrives.
 
-import { DEBUG } from '../flags';
+import { DEBUG } from '../flags.js';
 
 export const LIVE_WINDOW_MS = 60_000;
 export const DEFAULT_INTERVAL_MS = 500;

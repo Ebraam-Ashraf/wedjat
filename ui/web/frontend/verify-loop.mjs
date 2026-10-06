@@ -9,7 +9,7 @@ const check = (name, condition, extra = '') => (condition ? PASS : FAIL).push(`$
 const read = (file) => fs.readFileSync(file, 'utf8');
 
 const chart = read('src/components/TelemetryCharts.jsx');
-check('active charts subscribe to the shared RAF scheduler', /rafLoop\.add/.test(chart) && /from '\.\.\/store\/rafLoop'/.test(chart));
+check('active charts subscribe to the shared RAF scheduler', /rafLoop\.add/.test(chart) && /from '\.\.\/store\/rafLoop(?:\.js)?'/.test(chart));
 const scheduler = read('src/store/rafLoop.js');
 check('shared RAF scheduler stops after its last chart unsubscribes', /this\.subs\.delete\(fn\);\s*this\._sync\(\);/.test(scheduler));
 check('charts do not create their own animation-frame loop', !/requestAnimationFrame|cancelAnimationFrame/.test(chart));

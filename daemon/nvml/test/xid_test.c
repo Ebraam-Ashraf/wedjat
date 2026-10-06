@@ -9,8 +9,7 @@
 #define FAIL 1
 #define SKIP 77
 
-static int test_xid_event_plumbing(int manual_mode)
-{
+static int test_xid_event_plumbing(int manual_mode) {
     struct xid_event_set *set = xid_event_set_create();
     if (!set) {
         fprintf(stderr, "FAIL: cannot allocate Xid event set\n");
@@ -30,7 +29,8 @@ static int test_xid_event_plumbing(int manual_mode)
         return FAIL;
     }
 
-    printf("TEST Xid event set registered for %u enumerated GPU(s)\n", set->device_count);
+    printf("TEST Xid event set registered for %u enumerated GPU(s)\n",
+           set->device_count);
     struct xid_event event;
     int result;
     do {
@@ -76,8 +76,7 @@ static int test_xid_event_plumbing(int manual_mode)
     return PASS;
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
     int manual = 0;
     for (int i = 1; i < argc; i++)
         if (strcmp(argv[i], "--manual") == 0)
@@ -95,7 +94,6 @@ int main(int argc, char **argv)
 
     int rc = test_xid_event_plumbing(manual);
     nvmlShutdown();
-    printf("\nxid_test: %s\n",
-           rc == PASS ? "PASS" : (rc == SKIP ? "SKIP" : "FAIL"));
+    printf("\nxid_test: %s\n", rc == PASS ? "PASS" : (rc == SKIP ? "SKIP" : "FAIL"));
     return rc;
 }

@@ -41,6 +41,7 @@ function fakeCanvas(w = 600, h = 240) {
       setTransform: rec('setTransform'), clearRect: rec('clearRect'),
       save: rec('save'), restore: rec('restore'),
       beginPath: rec('beginPath'), moveTo: rec('moveTo'), lineTo: rec('lineTo'),
+      bezierCurveTo: rec('bezierCurveTo'),
       stroke: rec('stroke'), fill: rec('fill'), arc: rec('arc'),
       fillRect: rec('fillRect'), fillText: rec('fillText'),
       measureText: (t) => ({ width: String(t).length * 7 }),
@@ -58,6 +59,7 @@ function makeRenderer(store, field = 'util', yDomain = [0, 100], yTicks = [0, 25
   const r = new ScopeRenderer(canvas, {
     store, field, windowMs: 15000, delayMs: 500, yDomain, yTicks,
     yFormat: (v) => String(v), valueFormat: (v) => String(v),
+    timeSource: () => _now,
   });
   return { canvas, r };
 }
@@ -262,11 +264,14 @@ function lastHeadValue(r) {
   const expected = p.w / 15;
   check('traverse time equals the 15s window', Math.abs(pxPerSec - expected) < 1, `${pxPerSec.toFixed(1)} vs ${expected.toFixed(1)} px/s`);
 
-  // Whole window must be drawn, not just the newest sample or two.
+  // Whole window must be drawn, not just the newest sample or two. The renderer
+  // uses Bezier segments, so count those instead of obsolete lineTo calls.
   const last = r.canvas.calls;
   const arcIdx2 = last.map((c) => c.name).lastIndexOf('arc');
   const begin2 = seriesPathStart(last, arcIdx2);
-  const seriesOps = last.slice(begin2, arcIdx2).filter((c) => c.name === 'moveTo' || c.name === 'lineTo').length;
+  const seriesOps = last.slice(begin2, arcIdx2).filter((c) =>
+    c.name === 'moveTo' || c.name === 'lineTo' || c.name === 'bezierCurveTo'
+  ).length;
   check('full window is plotted (29 samples + interpolated head)', seriesOps >= 28, `ops=${seriesOps}`);
 }
 
@@ -292,7 +297,8 @@ function lastHeadValue(r) {
   check('sample younger than the delay is not plotted', onePoint === 0, `arcs=${onePoint}`);
 
   // Once it is old enough it must appear.
-  r1.draw(_now + 600);
+  _now += 600;
+  r1.draw(_now);
   check('sample plots once past the delay', r1.canvas.calls.filter((c) => c.name === 'arc').length >= 1);
 
   // All fields invalid: must draw no line at all rather than dropping to 0.

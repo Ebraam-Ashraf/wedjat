@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
-import Freshness, { useFreshness } from './Freshness';
-import { useStoreValue } from '../hooks/useStoreValue';
+import Freshness, { useFreshness } from './Freshness.jsx';
+import { useStoreValue } from '../hooks/useStoreValue.js';
 
 export default function StatusBar({ store, connected, status, statusError, gpus, selectedGpu, onSelectGpu, live = true, onToggleLive }) {
   const location = useLocation();

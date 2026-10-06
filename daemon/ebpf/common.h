@@ -11,7 +11,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #endif
-#else  /* userspace — plain C test/loader files */
+#else /* userspace — plain C test/loader files */
 #include <linux/types.h>
 typedef __u32 u32;
 typedef __u64 u64;
@@ -25,33 +25,33 @@ typedef __s32 s32;
 
 /* Event IDs are a compact wire contract. Keep existing values stable. */
 enum event_id {
-    EVENT_CTX_SET        = 1,
-    EVENT_CTX_CREATE     = 2,
-    EVENT_CTX_DESTROY    = 3,
-    EVENT_LAUNCH         = 4,
-    EVENT_ALLOC          = 5,
-    EVENT_FREE           = 6,
-    EVENT_MEMCPY         = 7,
-    EVENT_SYNC           = 8,
-    EVENT_UVM_FAULT      = 9,
-    EVENT_UVM_MIGRATE    = 10,
-    EVENT_UVM_EVICT      = 11,
-    EVENT_IOCTL          = 12,
-    EVENT_MMAP           = 13,
+    EVENT_CTX_SET = 1,
+    EVENT_CTX_CREATE = 2,
+    EVENT_CTX_DESTROY = 3,
+    EVENT_LAUNCH = 4,
+    EVENT_ALLOC = 5,
+    EVENT_FREE = 6,
+    EVENT_MEMCPY = 7,
+    EVENT_SYNC = 8,
+    EVENT_UVM_FAULT = 9,
+    EVENT_UVM_MIGRATE = 10,
+    EVENT_UVM_EVICT = 11,
+    EVENT_IOCTL = 12,
+    EVENT_MMAP = 13,
     EVENT_SM_BLOCK_START = 14,
-    EVENT_SM_BLOCK_END   = 15,
-    EVENT_PROC_EXEC      = 16,
-    EVENT_PROC_EXIT      = 17,
-    EVENT_UVM_IOCTL      = 18,
-    EVENT_CTX_POP        = 19,
+    EVENT_SM_BLOCK_END = 15,
+    EVENT_PROC_EXEC = 16,
+    EVENT_PROC_EXIT = 17,
+    EVENT_UVM_IOCTL = 18,
+    EVENT_CTX_POP = 19,
     EVENT_ID_MAX
 };
 
 enum event_flags {
-    EVENT_F_NONE              = 0,
-    EVENT_F_DEVICE_UNKNOWN    = 1U << 0,
+    EVENT_F_NONE = 0,
+    EVENT_F_DEVICE_UNKNOWN = 1U << 0,
     EVENT_F_FROM_PID_FALLBACK = 1U << 1,
-    EVENT_F_RAW_CAPTURE       = 1U << 2
+    EVENT_F_RAW_CAPTURE = 1U << 2
 };
 
 /*
@@ -169,7 +169,7 @@ enum stat_id {
 };
 
 enum config_flags {
-    CONFIG_F_RAW_CAPTURE         = 1U << 0,
+    CONFIG_F_RAW_CAPTURE = 1U << 0,
     CONFIG_F_AGGREGATE_HOT_PATHS = 1U << 1
 };
 
@@ -286,24 +286,21 @@ struct {
     __type(value, struct process_seen_val);
 } seen_processes SEC(".maps");
 
-static __always_inline struct inflight_key make_inflight_key(u64 pid_tgid, u32 api_id)
-{
-    struct inflight_key key = { .pid_tgid = pid_tgid, .api_id = api_id };
+static __always_inline struct inflight_key make_inflight_key(u64 pid_tgid, u32 api_id) {
+    struct inflight_key key = {.pid_tgid = pid_tgid, .api_id = api_id};
     return key;
 }
 
-static __always_inline struct thread_key current_thread_key(void)
-{
+static __always_inline struct thread_key current_thread_key(void) {
     struct thread_key key = {
         .pid_tgid = bpf_get_current_pid_tgid(),
     };
     return key;
 }
 
-static __always_inline u32 current_device_ordinal(void)
-{
+static __always_inline u32 current_device_ordinal(void) {
     u64 pid_tgid = bpf_get_current_pid_tgid();
-    struct thread_key key = { .pid_tgid = pid_tgid };
+    struct thread_key key = {.pid_tgid = pid_tgid};
     u32 tgid = (u32)(pid_tgid >> 32);
     struct device_binding *device = bpf_map_lookup_elem(&tid_to_device, &key);
     struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
@@ -323,11 +320,10 @@ static __always_inline u32 current_device_ordinal(void)
     return WEDJAT_UNKNOWN_DEVICE;
 }
 
-static __always_inline void init_event(struct event *event, u32 api_id)
-{
+static __always_inline void init_event(struct event *event, u32 api_id) {
     u64 pid_tgid = bpf_get_current_pid_tgid();
     u32 tgid = (u32)(pid_tgid >> 32);
-    struct thread_key tkey = { .pid_tgid = pid_tgid };
+    struct thread_key tkey = {.pid_tgid = pid_tgid};
     struct device_binding *tid_dev = bpf_map_lookup_elem(&tid_to_device, &tkey);
 
     __builtin_memset(event, 0, sizeof(*event));
@@ -360,8 +356,7 @@ static __always_inline void init_event(struct event *event, u32 api_id)
     }
 }
 
-static __always_inline void stats_add(u32 api_id, enum stat_id stat_id)
-{
+static __always_inline void stats_add(u32 api_id, enum stat_id stat_id) {
     u32 slot = api_id < EVENT_ID_MAX ? api_id : 0;
     struct stats_val *stats = bpf_map_lookup_elem(&stats_map, &slot);
 
@@ -377,8 +372,7 @@ static __always_inline void stats_add(u32 api_id, enum stat_id stat_id)
         __sync_fetch_and_add(&stats->alloc_free_misses, 1);
 }
 
-static __always_inline void mark_gpu_process(u32 tgid)
-{
+static __always_inline void mark_gpu_process(u32 tgid) {
     struct task_struct *task;
     struct process_seen_val value = {};
 
@@ -394,8 +388,7 @@ static __always_inline void mark_gpu_process(u32 tgid)
     }
 }
 
-static __always_inline int submit_event(struct event *event)
-{
+static __always_inline int submit_event(struct event *event) {
     /* EVENT_F_DEVICE_UNKNOWN is already set by init_event when appropriate.
      * Proc lifecycle events are exempt — they intentionally have no device. */
     if (event->device_ordinal == WEDJAT_UNKNOWN_DEVICE &&
@@ -409,8 +402,7 @@ static __always_inline int submit_event(struct event *event)
     return 1;
 }
 
-static __always_inline int record_aggregate(struct event *event)
-{
+static __always_inline int record_aggregate(struct event *event) {
     u32 zero = 0;
     struct config_val *config = bpf_map_lookup_elem(&config_map, &zero);
     u32 flags = config ? config->flags : CONFIG_F_AGGREGATE_HOT_PATHS;
@@ -460,7 +452,6 @@ static __always_inline int record_aggregate(struct event *event)
 }
 
 #endif // host maps
-
 
 #if defined(__bpf__) && defined(DEVICE_BPF)
 

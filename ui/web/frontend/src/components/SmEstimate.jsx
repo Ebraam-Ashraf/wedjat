@@ -1,5 +1,5 @@
 import React from 'react';
-import { findSpec } from '../gpuSpecs';
+import { findSpec } from '../gpuSpecs.js';
 
 export function SmEstimate({ name, vramBytes, util, compact = false }) {
   const spec = findSpec(name, vramBytes);

@@ -5,15 +5,15 @@
 
 /* ── Lifecycle ────────────────────────────────────────────────────── */
 
-int  collector_init(void);
+int collector_init(void);
 void collector_shutdown(void);
 
 /* ── Device Discovery ─────────────────────────────────────────────── */
 
-int  collector_device_count(int *nvml_error);
+int collector_device_count(int *nvml_error);
 
 /* Fills uuid_out (must be ≥96 bytes). Returns 0 on success. */
-int  collector_device_uuid(unsigned int index, char *uuid_out, int *nvml_error);
+int collector_device_uuid(unsigned int index, char *uuid_out, int *nvml_error);
 
 /* ── Static Device Metadata ────────────────────────────────────────────
  * Read once at startup. Fields are stable for the lifetime of a boot, so
@@ -37,7 +37,7 @@ struct collector_device_info {
 };
 
 /* Populates info for the given device index. Returns 0 on success. */
-int  collector_device_info(unsigned int index, struct collector_device_info *info);
+int collector_device_info(unsigned int index, struct collector_device_info *info);
 
 /* ── Per-Device Snapshot ──────────────────────────────────────────── */
 
@@ -51,10 +51,10 @@ struct collector_gpu_snap {
     unsigned int mem_clock_mhz;
     unsigned int power_limit_mw;
     unsigned long long throttle_reasons;
-    unsigned long long ecc_errors;   /* uncorrected volatile */
+    unsigned long long ecc_errors; /* uncorrected volatile */
     uint64_t valid_fields;
-    int      ok;
-    int      nvml_error;
+    int ok;
+    int nvml_error;
 };
 
 /* Populates snap for the given UUID. */
@@ -91,7 +91,8 @@ struct collector_xid_event {
 };
 
 void *collector_xid_create(void);
-int collector_xid_wait(void *set, struct collector_xid_event *event_out, unsigned int timeout_ms);
+int collector_xid_wait(void *set, struct collector_xid_event *event_out,
+                       unsigned int timeout_ms);
 void collector_xid_destroy(void *set);
 
 #endif

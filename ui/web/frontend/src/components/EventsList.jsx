@@ -1,5 +1,5 @@
 import React, { memo } from 'react';
-import { useStoreValue } from '../hooks/useStoreValue';
+import { useStoreValue } from '../hooks/useStoreValue.js';
 
 // Recent events list.
 //

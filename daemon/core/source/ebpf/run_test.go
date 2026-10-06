@@ -5,8 +5,8 @@ import (
 	"os"
 	"testing"
 
-	sourceebpf "github.com/Ebraam-Ashraf/wedjat/daemon/core/source/ebpf"
 	"github.com/Ebraam-Ashraf/wedjat/daemon/core/source"
+	sourceebpf "github.com/Ebraam-Ashraf/wedjat/daemon/core/source/ebpf"
 )
 
 func TestStartDisabledReturnsNil(t *testing.T) {

@@ -44,23 +44,23 @@
 
 /* ── helpers ──────────────────────────────────────────────────────────────*/
 
-static bool env_on(const char *name)
-{
+static bool env_on(const char *name) {
     const char *v = getenv(name);
     return v && *v;
 }
 
 /* Fork a child that waits on a pipe before execl(). */
-static pid_t spawn_paused(const char *path, int *go_fd)
-{
+static pid_t spawn_paused(const char *path, int *go_fd) {
     int p[2];
-    if (pipe(p)) return -1;
+    if (pipe(p))
+        return -1;
 
     pid_t pid = fork();
     if (pid == 0) {
         char c;
         close(p[1]);
-        if (read(p[0], &c, 1) != 1) _exit(126);
+        if (read(p[0], &c, 1) != 1)
+            _exit(126);
         setenv("WEDJAT_SLEEP_MS", "200", 1);
         execl(path, path, (char *)NULL);
         _exit(127);
@@ -71,15 +71,14 @@ static pid_t spawn_paused(const char *path, int *go_fd)
 }
 
 /* Release child, but do NOT wait for it here — we need to poll while it runs. */
-static void release_child(int go_fd)
-{
-    if (write(go_fd, "x", 1) != 1) perror("write");
+static void release_child(int go_fd) {
+    if (write(go_fd, "x", 1) != 1)
+        perror("write");
     close(go_fd);
 }
 
 static int test_untracked_context_clears_binding(struct host_ctx_bpf *skel,
-                                                  const char *lib)
-{
+                                                 const char *lib) {
     if (!skel->links.trace_cuDevicePrimaryCtxRetain ||
         !skel->links.trace_cuCtxSetCurrent) {
         printf("SKIP: context binding hooks unavailable\n");
@@ -157,15 +156,18 @@ static int test_untracked_context_clears_binding(struct host_ctx_bpf *skel,
 }
 
 /* Scan dir for executable files starting with 'k' and no dot in the name. */
-static int scan_kernels(const char *dir, char **paths, int max)
-{
+static int scan_kernels(const char *dir, char **paths, int max) {
     DIR *d = opendir(dir);
-    if (!d) { printf("FAIL: cannot open %s: %s\n", dir, strerror(errno)); return 0; }
+    if (!d) {
+        printf("FAIL: cannot open %s: %s\n", dir, strerror(errno));
+        return 0;
+    }
 
     int n = 0;
     struct dirent *e;
     while ((e = readdir(d)) != NULL && n < max) {
-        if (e->d_name[0] != 'k' || strchr(e->d_name, '.')) continue;
+        if (e->d_name[0] != 'k' || strchr(e->d_name, '.'))
+            continue;
         char path[512];
         snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
         if (access(path, X_OK) == 0)
@@ -176,22 +178,28 @@ static int scan_kernels(const char *dir, char **paths, int max)
     for (int i = 0; i < n - 1; i++)
         for (int j = i + 1; j < n; j++)
             if (strcmp(paths[i], paths[j]) > 0) {
-                char *tmp = paths[i]; paths[i] = paths[j]; paths[j] = tmp;
+                char *tmp = paths[i];
+                paths[i] = paths[j];
+                paths[j] = tmp;
             }
     return n;
 }
 
 /* ── main ─────────────────────────────────────────────────────────────────*/
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
     const char *dir = argc > 1 ? argv[1] : "build";
     const char *lib = env_on("LIBCUDA") ? getenv("LIBCUDA") : "libcuda.so.1";
 
     /* 1. environment */
-    if (geteuid() != 0)        { printf("SKIP: run as root\n");   return SKIP; }
-    if (access("/dev/nvidiactl", F_OK) != 0)
-                               { printf("SKIP: no NVIDIA GPU\n"); return SKIP; }
+    if (geteuid() != 0) {
+        printf("SKIP: run as root\n");
+        return SKIP;
+    }
+    if (access("/dev/nvidiactl", F_OK) != 0) {
+        printf("SKIP: no NVIDIA GPU\n");
+        return SKIP;
+    }
 
     /* 2. load */
     printf("== host_ctx ==\n");
@@ -205,39 +213,38 @@ int main(int argc, char **argv)
     /* 3. attach */
     printf("attach\n");
 
-#define H(sym)  { skel->progs.trace_##sym,      #sym, false, &skel->links.trace_##sym }
-#define HR(sym) { skel->progs.trace_##sym##_ret, #sym, true,  &skel->links.trace_##sym##_ret }
+#define H(sym)                                                                         \
+    { skel->progs.trace_##sym, #sym, false, &skel->links.trace_##sym }
+#define HR(sym)                                                                        \
+    { skel->progs.trace_##sym##_ret, #sym, true, &skel->links.trace_##sym##_ret }
 
     struct {
         struct bpf_program *prog;
-        const char         *sym;
-        bool                ret;
-        struct bpf_link   **slot;
+        const char *sym;
+        bool ret;
+        struct bpf_link **slot;
     } hooks[] = {
-        H(cuDevicePrimaryCtxRetain),  HR(cuDevicePrimaryCtxRetain),
-        H(cuCtxSetCurrent),
-        H(cuCtxCreate_v2),            HR(cuCtxCreate_v2),
-        H(cuCtxCreate_v3),            HR(cuCtxCreate_v3),
-        H(cuCtxCreate_v4),            HR(cuCtxCreate_v4),
-        H(cuCtxPushCurrent_v2),
-        H(cuCtxPopCurrent_v2),        HR(cuCtxPopCurrent_v2),
-        H(cuCtxDestroy_v2),
-        H(cuDevicePrimaryCtxRelease_v2),
+        H(cuDevicePrimaryCtxRetain), HR(cuDevicePrimaryCtxRetain),
+        H(cuCtxSetCurrent),          H(cuCtxCreate_v2),
+        HR(cuCtxCreate_v2),          H(cuCtxCreate_v3),
+        HR(cuCtxCreate_v3),          H(cuCtxCreate_v4),
+        HR(cuCtxCreate_v4),          H(cuCtxPushCurrent_v2),
+        H(cuCtxPopCurrent_v2),       HR(cuCtxPopCurrent_v2),
+        H(cuCtxDestroy_v2),          H(cuDevicePrimaryCtxRelease_v2),
     };
 #undef H
 #undef HR
 
-    int n_hooks  = (int)(sizeof(hooks) / sizeof(hooks[0]));
+    int n_hooks = (int)(sizeof(hooks) / sizeof(hooks[0]));
     int attached = 0;
     for (int i = 0; i < n_hooks; i++) {
-        LIBBPF_OPTS(bpf_uprobe_opts, o,
-                    .func_name = hooks[i].sym,
-                    .retprobe  = hooks[i].ret);
+        LIBBPF_OPTS(bpf_uprobe_opts, o, .func_name = hooks[i].sym,
+                    .retprobe = hooks[i].ret);
         struct bpf_link *l =
             bpf_program__attach_uprobe_opts(hooks[i].prog, -1, lib, 0, &o);
         if (!l) {
-            printf("  skip  %s%s (%s)\n",
-                   hooks[i].sym, hooks[i].ret ? "[ret]" : "", strerror(errno));
+            printf("  skip  %s%s (%s)\n", hooks[i].sym, hooks[i].ret ? "[ret]" : "",
+                   strerror(errno));
             continue;
         }
         *hooks[i].slot = l;
@@ -258,7 +265,7 @@ int main(int argc, char **argv)
 
     /* 4. loop kernels */
     char *kpaths[64];
-    int   nk = scan_kernels(dir, kpaths, 64);
+    int nk = scan_kernels(dir, kpaths, 64);
     if (nk == 0) {
         printf("SKIP: no k* binaries in %s\n", dir);
         host_ctx_bpf__destroy(skel);
@@ -268,7 +275,7 @@ int main(int argc, char **argv)
     printf("\nkernel      tid_found  device  result\n");
 
     int ctx_fd = bpf_map__fd(skel->maps.tid_to_device);
-    int fail   = 0;
+    int fail = 0;
 
     for (int k = 0; k < nk; k++) {
         const char *kname = strrchr(kpaths[k], '/') + 1;
@@ -286,8 +293,8 @@ int main(int argc, char **argv)
         /* Poll tid_to_device while the process is running.
          * The BPF program removes the TID when the context is destroyed on exit,
          * so we must catch it while it's still alive. */
-        struct thread_key tid = { .pid_tgid = ((u64)(u32)pid << 32) | (u32)pid };
-        struct device_binding binding = { .device_ordinal = 0xffffffff };
+        struct thread_key tid = {.pid_tgid = ((u64)(u32)pid << 32) | (u32)pid};
+        struct device_binding binding = {.device_ordinal = 0xffffffff};
         int found = 0;
 
         while (1) {
@@ -308,8 +315,7 @@ int main(int argc, char **argv)
         waitpid(pid, &st, 0);
         int rc = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 
-        printf("  %-10s  %-9s  %-6u  ", kname,
-               found ? "yes" : "no",
+        printf("  %-10s  %-9s  %-6u  ", kname, found ? "yes" : "no",
                found ? binding.device_ordinal : 0xffffffff);
 
         if (!found) {

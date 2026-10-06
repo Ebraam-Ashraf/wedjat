@@ -118,12 +118,12 @@ func (s *Session) scanHungSyncs(ctx context.Context) {
 		}
 
 		se := source.Event{
-			TsNano:        now,
-			Tgid:          tgid,
-			Tid:           tid,
-			ApiID:         eventSync,
-			Flags:         source.FlagHungSync,
-			LatencyNs:     now - start,
+			TsNano:    now,
+			Tgid:      tgid,
+			Tid:       tid,
+			ApiID:     eventSync,
+			Flags:     source.FlagHungSync,
+			LatencyNs: now - start,
 		}
 		source.Send(s.db.Event, se)
 		if source.Clients.Load() > 0 {

@@ -20,7 +20,7 @@
 //   Gap: if the daemon was silent for more than 3s (not just jitter), the line
 //   breaks. Normal OS/network jitter of a few hundred ms never breaks it.
 
-import { monotoneBezierSegments } from './curve';
+import { monotoneBezierSegments } from './curve.js';
 
 const GRID_LINE = 'rgba(148,163,184,0.58)';
 const AXIS_LINE = 'rgba(203,213,225,0.80)';

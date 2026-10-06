@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { apiGet } from '../api';
+import { apiGet } from '../api.js';
 
 function Incidents() {
   const [incidents, setIncidents] = useState([]);

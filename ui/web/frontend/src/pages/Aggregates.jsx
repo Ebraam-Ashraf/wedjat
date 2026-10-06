@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { apiGet, formatBytes } from '../api';
+import { apiGet, formatBytes } from '../api.js';
 
 function Aggregates() {
   const [aggs, setAggs] = useState([]);

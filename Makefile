@@ -2,7 +2,7 @@ SHELL := /bin/bash
 .ONESHELL:
 .SHELLFLAGS := -eu -o pipefail -c
 
-ROOT_DIR := $(CURDIR)
+ROOT_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 DAEMON_DIR := $(ROOT_DIR)/daemon
 UI_DIR := $(ROOT_DIR)/ui/web
 FRONTEND_DIR := $(UI_DIR)/frontend
@@ -14,15 +14,16 @@ RELEASE_NAME := wedjat-linux-$(GOARCH)
 ARCHIVE := $(DIST_DIR)/$(RELEASE_NAME).tar.gz
 .DEFAULT_GOAL := build
 
-.PHONY: build release install uninstall clean help
+.PHONY: build release install uninstall clean help ci
 
 help:
 	@printf '%s\n' \
 		'Wedjat developer commands' \
 		'  sudo make                 Build the release artifacts' \
-		'  sudo make install         Build and install the local release' \
+		'  sudo make install         Install an existing local release' \
 		'  sudo make uninstall       Uninstall Wedjat, preserving build files' \
 		'  sudo make clean           Uninstall and remove all build artifacts' \
+		'  sudo make ci              Format, build dev, test daemon, clean' \
 		'  sudo make help            Show this help'
 
 build:
@@ -45,7 +46,7 @@ build:
 
 	# Build a production copy without changing the development UI source.
 	sed \
-		-e "s|const baseDir = .*|const socketPath = process.env.WEDJAT_SOCKET_PATH || '/run/wedjat/wedjat.sock';\\nconst dataDir = process.env.WEDJAT_DATA_DIR || '/var/lib/wedjat';|" \
+		-e "s#const baseDir = .*#const socketPath = process.env.WEDJAT_SOCKET_PATH || '/run/wedjat/wedjat.sock';\\nconst dataDir = process.env.WEDJAT_DATA_DIR || '/var/lib/wedjat';#" \
 		-e "/const socketPath = path.join(baseDir, 'run', 'wedjat.sock');/d" \
 		-e "/const dataDir = path.join(baseDir, 'var', 'lib', 'wedjat');/d" \
 		-e "s|path.join(__dirname, 'frontend')|path.join(__dirname, 'frontend', 'dist')|" \
@@ -66,25 +67,35 @@ build:
 	      exit 2
 	    }
 	    if [ "$$(id -u)" -eq 0 ]; then
-	      exec /usr/local/bin/wedjat-uninstall
+	      printf 'N\n' | /usr/local/bin/wedjat-uninstall
+	      exit $$?
 	    fi
 	    command -v sudo >/dev/null 2>&1 || {
 	      echo 'wedjat: uninstall requires root; run sudo wedjat uninstall' >&2
 	      exit 1
 	    }
-	    exec sudo /usr/local/bin/wedjat-uninstall
+	    printf 'N\n' | sudo /usr/local/bin/wedjat-uninstall
+	    exit $$?
 	    ;;
-  --help|-h)
+	  --help|-h)
 	    printf '%s\n' 'Usage: wedjat [uninstall]' '  wedjat            Open the dashboard' '  wedjat uninstall  Remove Wedjat'
 	    exit 0
 	    ;;
-  '')
+	  '')
 	    ;;
-  *)
+	  *)
 	    echo 'Usage: wedjat [uninstall]' >&2
 	    exit 2
 	    ;;
-esac
+	esac
+
+		if [ "$$(id -u)" -ne 0 ] && [ -z "$${WEDJAT_UI_NO_SUDO:-}" ]; then
+			command -v sudo >/dev/null 2>&1 || {
+				echo 'wedjat: dashboard access requires sudo or membership in the wedjat group' >&2
+				exit 1
+			}
+			exec sudo -E env WEDJAT_UI_NO_SUDO=1 "$$0" "$$@"
+		fi
 
 	command -v node >/dev/null 2>&1 || {
 	  echo 'wedjat: node.js is required to open the dashboard' >&2
@@ -93,9 +104,11 @@ esac
 	runtime_dir=$$(mktemp -d "$${TMPDIR:-/tmp}/wedjat.XXXXXX")
 	cleanup() { rm -rf -- "$$runtime_dir"; }
 	trap cleanup EXIT INT TERM
-	awk '/^__WEDJAT_PAYLOAD__$$/ { payload=1; next } payload { print }' "$$0" | tar -xzf - -C "$$runtime_dir"
+	payload_line=$$(awk '/^__WEDJAT_PAYLOAD__$$/ { print NR + 1; exit }' "$$0")
+	[ -n "$$payload_line" ] || { echo 'wedjat: embedded UI payload is missing' >&2; exit 1; }
+	tail -n +"$$payload_line" "$$0" | tar -xzf - -C "$$runtime_dir"
 	cd "$$runtime_dir"
-	exec node server.js "$$@"
+	exec env WEDJAT_PRODUCTION=1 node server.js "$$@"
 	exit 0
 	__WEDJAT_PAYLOAD__
 	LAUNCHER
@@ -113,14 +126,35 @@ esac
 
 release: build
 
-install: build
-	sudo "$(ROOT_DIR)/scripts/install.sh" --local "$(DIST_DIR)"
+ci:
+	cleanup() {
+		status=$$?;
+		$(MAKE) -C "$(DAEMON_DIR)" clean || true;
+		rm -rf "$(FRONTEND_DIR)/dist" "$(DIST_DIR)";
+		exit $$status;
+	}
+	trap cleanup EXIT
+
+	command -v gofmt >/dev/null || { echo 'ci requires gofmt' >&2; exit 1; }
+	command -v clang-format >/dev/null || { echo 'ci requires clang-format' >&2; exit 1; }
+
+	gofmt -w "$(DAEMON_DIR)"
+	find "$(DAEMON_DIR)/nvml" -type d -name build -prune -o \
+		-type f \( -name '*.c' -o -name '*.h' \) -print0 \
+		| xargs -0 -r clang-format -i
+
+	$(MAKE) -C "$(DAEMON_DIR)" test
+
+install:
+	[ -f "$(ARCHIVE)" ] || { echo "missing $(ARCHIVE); run sudo make first" >&2; exit 1; }
+	[ -f "$(ARCHIVE).sha256" ] || { echo "missing $(ARCHIVE).sha256; run sudo make first" >&2; exit 1; }
+	sudo bash "$(ROOT_DIR)/scripts/install.sh" --local "$(DIST_DIR)"
 
 uninstall:
 	if [ "$${EUID:-$$(id -u)}" -eq 0 ]; then
-		"$(ROOT_DIR)/scripts/uninstall.sh"
+		printf 'N\n' | bash "$(ROOT_DIR)/scripts/uninstall.sh"
 	else
-		sudo "$(ROOT_DIR)/scripts/uninstall.sh"
+		printf 'N\n' | sudo bash "$(ROOT_DIR)/scripts/uninstall.sh"
 	fi
 
 clean:

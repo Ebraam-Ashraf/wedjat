@@ -21,9 +21,9 @@ struct xid_event_set {
 };
 
 enum xid_wait_result {
-    XID_WAIT_OK           = 0,
-    XID_WAIT_TIMEOUT      = 1,
-    XID_WAIT_ERROR        = 2,
+    XID_WAIT_OK = 0,
+    XID_WAIT_TIMEOUT = 1,
+    XID_WAIT_ERROR = 2,
     XID_WAIT_NOT_SUPPORTED = 3
 };
 

@@ -55,11 +55,11 @@ char LICENSE[] SEC("license") = "GPL";
 // 506 membar  507 exit (!)  508 gridDim  509 smid
 // 509 is the smid one — do NOT use 507, it is asm("exit;") and kills the
 // thread before the event is ever written.
-static u64  (*bpf_get_globaltimer)(void)                    = (void *)502;
-static long (*bpf_get_block_idx)(u64 *x, u64 *y, u64 *z)    = (void *)503;
-static long (*bpf_get_block_dim)(u64 *x, u64 *y, u64 *z)    = (void *)504;
-static long (*bpf_get_thread_idx)(u64 *x, u64 *y, u64 *z)   = (void *)505;
-static u64  (*bpf_get_sm_id)(void)                          = (void *)509;
+static u64 (*bpf_get_globaltimer)(void) = (void *)502;
+static long (*bpf_get_block_idx)(u64 *x, u64 *y, u64 *z) = (void *)503;
+static long (*bpf_get_block_dim)(u64 *x, u64 *y, u64 *z) = (void *)504;
+static long (*bpf_get_thread_idx)(u64 *x, u64 *y, u64 *z) = (void *)505;
+static u64 (*bpf_get_sm_id)(void) = (void *)509;
 
 // How many blocks report. bpftime's GPU ringbuf is indexed by *global* thread
 // id (blockIdx*blockDim+threadIdx, see getGlobalThreadId in
@@ -72,8 +72,8 @@ static u64  (*bpf_get_sm_id)(void)                          = (void *)509;
 // At 256 threads/block this covers WEDJAT_MAX_GLOBAL_TID/256 blocks.
 #define WEDJAT_MAX_GLOBAL_TID 8192
 
-static __always_inline bool wedjat_report_this_block(u64 *ctaid_x, u64 *ctaid_y, u64 *ctaid_z)
-{
+static __always_inline bool wedjat_report_this_block(u64 *ctaid_x, u64 *ctaid_y,
+                                                     u64 *ctaid_z) {
     u64 bx, by, bz, bdx, bdy, bdz, td[3];
     bpf_get_thread_idx(&td[0], &td[1], &td[2]);
     /* one report per block: thread (0,0,0) only */
@@ -89,15 +89,14 @@ static __always_inline bool wedjat_report_this_block(u64 *ctaid_x, u64 *ctaid_y,
 
 // kernel entry
 SEC("kprobe/" WEDJAT_TARGET_SYM)
-int cuda__trace_sm_block(void)
-{
+int cuda__trace_sm_block(void) {
     u64 bx = 0, by = 0, bz = 0;
     if (!wedjat_report_this_block(&bx, &by, &bz))
         return 0;
 
     struct dev_event e = {};
-    e.api_id  = EVENT_SM_BLOCK_START;
-    e.sm_id   = bpf_get_sm_id();
+    e.api_id = EVENT_SM_BLOCK_START;
+    e.sm_id = bpf_get_sm_id();
     e.ctaid_x = bx;
     e.ctaid_y = by;
     e.ctaid_z = bz;
@@ -106,8 +105,8 @@ int cuda__trace_sm_block(void)
      * context.  The exact helper number in bpftime's GPU table is not
      * documented here — it works only because bpftime remaps standard
      * helper IDs to GPU-appropriate implementations. */
-    e.pid     = bpf_get_current_pid_tgid() >> 32;
-    e.ts_ns   = bpf_get_globaltimer();
+    e.pid = bpf_get_current_pid_tgid() >> 32;
+    e.ts_ns = bpf_get_globaltimer();
 
     bpf_perf_event_output(NULL, &dev_events_pipe, 0, &e, sizeof(e));
     return 0;
@@ -115,20 +114,19 @@ int cuda__trace_sm_block(void)
 
 // kernel exit
 SEC("kretprobe/" WEDJAT_TARGET_SYM)
-int cuda__trace_sm_block_ret(void)
-{
+int cuda__trace_sm_block_ret(void) {
     u64 bx = 0, by = 0, bz = 0;
     if (!wedjat_report_this_block(&bx, &by, &bz))
         return 0;
 
     struct dev_event e = {};
-    e.api_id  = EVENT_SM_BLOCK_END;
-    e.sm_id   = bpf_get_sm_id();
+    e.api_id = EVENT_SM_BLOCK_END;
+    e.sm_id = bpf_get_sm_id();
     e.ctaid_x = bx;
     e.ctaid_y = by;
     e.ctaid_z = bz;
-    e.pid     = bpf_get_current_pid_tgid() >> 32;
-    e.ts_ns   = bpf_get_globaltimer();
+    e.pid = bpf_get_current_pid_tgid() >> 32;
+    e.ts_ns = bpf_get_globaltimer();
 
     bpf_perf_event_output(NULL, &dev_events_pipe, 0, &e, sizeof(e));
     return 0;

@@ -3,8 +3,7 @@
 #include <bpf/bpf_tracing.h>
 #include "../common.h"
 
-static __always_inline int begin_driver_call(u32 api_id, u64 payload)
-{
+static __always_inline int begin_driver_call(u32 api_id, u64 payload) {
     u64 pid_tgid = bpf_get_current_pid_tgid();
     struct inflight_key key = make_inflight_key(pid_tgid, api_id);
     struct inflight_val value = {
@@ -18,8 +17,7 @@ static __always_inline int begin_driver_call(u32 api_id, u64 payload)
     return 0;
 }
 
-static __always_inline int finish_driver_call(u32 api_id, long ret)
-{
+static __always_inline int finish_driver_call(u32 api_id, long ret) {
     u64 pid_tgid = bpf_get_current_pid_tgid();
     struct inflight_key key = make_inflight_key(pid_tgid, api_id);
     struct inflight_val *value = bpf_map_lookup_elem(&driver_inflight_map, &key);
@@ -44,13 +42,11 @@ static __always_inline int finish_driver_call(u32 api_id, long ret)
 }
 
 SEC("kprobe/nvidia_mmap")
-int BPF_KPROBE(trace_nvidia_mmap, void *file, void *vma)
-{
+int BPF_KPROBE(trace_nvidia_mmap, void *file, void *vma) {
     return begin_driver_call(EVENT_MMAP, (u64)vma);
 }
 SEC("kretprobe/nvidia_mmap")
-int BPF_KRETPROBE(trace_nvidia_mmap_ret, long ret)
-{
+int BPF_KRETPROBE(trace_nvidia_mmap_ret, long ret) {
     return finish_driver_call(EVENT_MMAP, ret);
 }
 
@@ -58,31 +54,26 @@ int BPF_KRETPROBE(trace_nvidia_mmap_ret, long ret)
  * and reported by the loader. Validate the symbol and argument layout against
  * the installed NVIDIA module before relying on ioctl payloads. */
 SEC("kprobe/nvidia_ioctl")
-int BPF_KPROBE(trace_nvidia_ioctl, void *file, u32 cmd, u64 arg)
-{
+int BPF_KPROBE(trace_nvidia_ioctl, void *file, u32 cmd, u64 arg) {
     return begin_driver_call(EVENT_IOCTL, cmd);
 }
 SEC("kretprobe/nvidia_ioctl")
-int BPF_KRETPROBE(trace_nvidia_ioctl_ret, long ret)
-{
+int BPF_KRETPROBE(trace_nvidia_ioctl_ret, long ret) {
     return finish_driver_call(EVENT_IOCTL, ret);
 }
 
 SEC("kprobe/uvm_ioctl")
-int BPF_KPROBE(trace_uvm_ioctl, void *file, u32 cmd, u64 arg)
-{
+int BPF_KPROBE(trace_uvm_ioctl, void *file, u32 cmd, u64 arg) {
     return begin_driver_call(EVENT_UVM_IOCTL, cmd);
 }
 SEC("kretprobe/uvm_ioctl")
-int BPF_KRETPROBE(trace_uvm_ioctl_ret, long ret)
-{
+int BPF_KRETPROBE(trace_uvm_ioctl_ret, long ret) {
     return finish_driver_call(EVENT_UVM_IOCTL, ret);
 }
 
 SEC("kprobe/uvm_va_block_service_fault")
-int BPF_KPROBE(trace_uvm_va_block_service_fault, void *va_block,
-               void *service_context, void *fault_page)
-{
+int BPF_KPROBE(trace_uvm_va_block_service_fault, void *va_block, void *service_context,
+               void *fault_page) {
     /* uvm_va_block_service_fault(uvm_va_block_t*, uvm_service_block_context_t*,
      *                             uvm_page_index_t)
      * The faulting VA is not a direct argument, but the va_block carries the
@@ -94,30 +85,25 @@ int BPF_KPROBE(trace_uvm_va_block_service_fault, void *va_block,
     return begin_driver_call(EVENT_UVM_FAULT, va);
 }
 SEC("kretprobe/uvm_va_block_service_fault")
-int BPF_KRETPROBE(trace_uvm_va_block_service_fault_ret, long ret)
-{
+int BPF_KRETPROBE(trace_uvm_va_block_service_fault_ret, long ret) {
     return finish_driver_call(EVENT_UVM_FAULT, ret);
 }
 
 SEC("kprobe/uvm_migrate")
-int BPF_KPROBE(trace_uvm_migrate)
-{
+int BPF_KPROBE(trace_uvm_migrate) {
     return begin_driver_call(EVENT_UVM_MIGRATE, 0);
 }
 SEC("kretprobe/uvm_migrate")
-int BPF_KRETPROBE(trace_uvm_migrate_ret, long ret)
-{
+int BPF_KRETPROBE(trace_uvm_migrate_ret, long ret) {
     return finish_driver_call(EVENT_UVM_MIGRATE, ret);
 }
 
 SEC("kprobe/uvm_va_block_evict_pages")
-int BPF_KPROBE(trace_uvm_va_block_evict_pages)
-{
+int BPF_KPROBE(trace_uvm_va_block_evict_pages) {
     return begin_driver_call(EVENT_UVM_EVICT, 0);
 }
 SEC("kretprobe/uvm_va_block_evict_pages")
-int BPF_KRETPROBE(trace_uvm_va_block_evict_pages_ret, long ret)
-{
+int BPF_KRETPROBE(trace_uvm_va_block_evict_pages_ret, long ret) {
     return finish_driver_call(EVENT_UVM_EVICT, ret);
 }
 

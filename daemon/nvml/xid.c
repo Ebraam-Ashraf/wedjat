@@ -7,14 +7,12 @@
 #include <string.h>
 #include <time.h>
 
-static void keep_first_error(nvmlReturn_t *dst, nvmlReturn_t result)
-{
+static void keep_first_error(nvmlReturn_t *dst, nvmlReturn_t result) {
     if (*dst == NVML_SUCCESS && result != NVML_SUCCESS)
         *dst = result;
 }
 
-static nvmlReturn_t register_all_devices(struct xid_event_set *set)
-{
+static nvmlReturn_t register_all_devices(struct xid_event_set *set) {
     unsigned int count = 0;
     nvmlReturn_t result = NVML_CALL(nvmlDeviceGetCount, &count);
 
@@ -43,12 +41,11 @@ static nvmlReturn_t register_all_devices(struct xid_event_set *set)
     }
 
     set->device_count = registered;
-    return registered ? NVML_SUCCESS :
-           (set->nvml_error ? set->nvml_error : NVML_ERROR_NOT_SUPPORTED);
+    return registered ? NVML_SUCCESS
+                      : (set->nvml_error ? set->nvml_error : NVML_ERROR_NOT_SUPPORTED);
 }
 
-static struct xid_event_set *xid_event_set_create_locked(void)
-{
+static struct xid_event_set *xid_event_set_create_locked(void) {
     struct xid_event_set *set = calloc(1, sizeof(*set));
     if (!set)
         return NULL;
@@ -65,16 +62,14 @@ static struct xid_event_set *xid_event_set_create_locked(void)
     return set;
 }
 
-struct xid_event_set *xid_event_set_create(void)
-{
+struct xid_event_set *xid_event_set_create(void) {
     poller_nvml_lock();
     struct xid_event_set *set = xid_event_set_create_locked();
     poller_nvml_unlock();
     return set;
 }
 
-static nvmlReturn_t recreate_set(struct xid_event_set *set)
-{
+static nvmlReturn_t recreate_set(struct xid_event_set *set) {
     if (set->set_created) {
         NVML_CALL(nvmlEventSetFree, set->set);
         set->set_created = 0;
@@ -100,8 +95,7 @@ static nvmlReturn_t recreate_set(struct xid_event_set *set)
 
 static int xid_event_set_wait_locked(struct xid_event_set *set,
                                      struct xid_event *event_out,
-                                     unsigned int timeout_ms)
-{
+                                     unsigned int timeout_ms) {
     if (!set || !set->valid || !set->set_created)
         return XID_WAIT_NOT_SUPPORTED;
     if (!event_out) {
@@ -133,8 +127,8 @@ static int xid_event_set_wait_locked(struct xid_event_set *set,
         set->nvml_error = NVML_ERROR_UNKNOWN;
         return XID_WAIT_ERROR;
     }
-    event_out->timestamp_ns = (uint64_t)now.tv_sec * 1000000000ULL +
-                              (uint64_t)now.tv_nsec;
+    event_out->timestamp_ns =
+        (uint64_t)now.tv_sec * 1000000000ULL + (uint64_t)now.tv_nsec;
     event_out->nvml_event_type = data.eventType;
     event_out->nvml_event_data = data.eventData;
 
@@ -153,16 +147,14 @@ static int xid_event_set_wait_locked(struct xid_event_set *set,
 }
 
 int xid_event_set_wait(struct xid_event_set *set, struct xid_event *event_out,
-                       unsigned int timeout_ms)
-{
+                       unsigned int timeout_ms) {
     poller_nvml_lock();
     int result = xid_event_set_wait_locked(set, event_out, timeout_ms);
     poller_nvml_unlock();
     return result;
 }
 
-void xid_event_set_destroy(struct xid_event_set *set)
-{
+void xid_event_set_destroy(struct xid_event_set *set) {
     if (!set)
         return;
 

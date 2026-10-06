@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { apiGet } from '../api';
+import { apiGet } from '../api.js';
 
 function GPUs() {
   const [gpus, setGpus] = useState([]);

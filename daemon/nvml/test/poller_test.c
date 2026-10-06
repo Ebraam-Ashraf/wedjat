@@ -14,26 +14,27 @@
 
 int poller_test_fail_power_query;
 
-#define ASSERT_TRUE(cond, msg) do { \
-    if (!(cond)) { \
-        fprintf(stderr, "FAIL [%s:%d]: %s\n", __FILE__, __LINE__, (msg)); \
-        return FAIL; \
-    } \
-} while (0)
+#define ASSERT_TRUE(cond, msg)                                                         \
+    do {                                                                               \
+        if (!(cond)) {                                                                 \
+            fprintf(stderr, "FAIL [%s:%d]: %s\n", __FILE__, __LINE__, (msg));          \
+            return FAIL;                                                               \
+        }                                                                              \
+    } while (0)
 
-#define ASSERT_IN_RANGE(val, lo, hi, msg) do { \
-    if ((long long)(val) < (long long)(lo) || \
-        (long long)(val) > (long long)(hi)) { \
-        fprintf(stderr, "FAIL [%s:%d]: %s (got %lld, want [%lld, %lld])\n", \
-                __FILE__, __LINE__, (msg), (long long)(val), \
-                (long long)(lo), (long long)(hi)); \
-        return FAIL; \
-    } \
-} while (0)
+#define ASSERT_IN_RANGE(val, lo, hi, msg)                                              \
+    do {                                                                               \
+        if ((long long)(val) < (long long)(lo) ||                                      \
+            (long long)(val) > (long long)(hi)) {                                      \
+            fprintf(stderr, "FAIL [%s:%d]: %s (got %lld, want [%lld, %lld])\n",        \
+                    __FILE__, __LINE__, (msg), (long long)(val), (long long)(lo),      \
+                    (long long)(hi));                                                  \
+            return FAIL;                                                               \
+        }                                                                              \
+    } while (0)
 
-static pid_t run_fixture(const char *path, const char *uuid, long n,
-                         int iters, int sleep_ms)
-{
+static pid_t run_fixture(const char *path, const char *uuid, long n, int iters,
+                         int sleep_ms) {
     pid_t pid = fork();
     if (pid < 0) {
         perror("fork");
@@ -55,8 +56,7 @@ static pid_t run_fixture(const char *path, const char *uuid, long n,
     return pid;
 }
 
-static int test_invalid_device(void)
-{
+static int test_invalid_device(void) {
     struct device_snapshot snapshot;
     poller_snapshot_device_uuid("GPU-invalid", &snapshot);
     ASSERT_TRUE(!snapshot.valid, "invalid UUID must not produce a valid sample");
@@ -67,8 +67,7 @@ static int test_invalid_device(void)
     return PASS;
 }
 
-static int test_device_snapshots(unsigned int count)
-{
+static int test_device_snapshots(unsigned int count) {
     printf("TEST device_snapshots devices=%u\n", count);
     for (unsigned int i = 0; i < count; i++) {
         struct device_metadata metadata;
@@ -102,24 +101,22 @@ static int test_device_snapshots(unsigned int count)
             ASSERT_TRUE(snapshot.mem_used <= snapshot.mem_total,
                         "used memory must not exceed total");
 
-        printf("PASS device=%u name=%s temp=%s%uC power=%s%umW fields=0x%llx\n",
-               i, metadata.name,
-               snapshot.valid_fields & DEVICE_VALID_TEMP ? "" : "N/A/",
+        printf("PASS device=%u name=%s temp=%s%uC power=%s%umW fields=0x%llx\n", i,
+               metadata.name, snapshot.valid_fields & DEVICE_VALID_TEMP ? "" : "N/A/",
                snapshot.temp_c,
                snapshot.valid_fields & DEVICE_VALID_POWER ? "" : "N/A/",
-               snapshot.power_mw,
-               (unsigned long long)snapshot.valid_fields);
+               snapshot.power_mw, (unsigned long long)snapshot.valid_fields);
     }
     return PASS;
 }
 
-static int test_failed_field(const char *uuid)
-{
+static int test_failed_field(const char *uuid) {
     struct device_snapshot snapshot;
     poller_test_fail_power_query = 1;
     poller_snapshot_device_uuid(uuid, &snapshot);
     poller_test_fail_power_query = 0;
-    ASSERT_TRUE(snapshot.valid, "one failed field must not invalidate the entire sample");
+    ASSERT_TRUE(snapshot.valid,
+                "one failed field must not invalidate the entire sample");
     ASSERT_TRUE(!(snapshot.valid_fields & DEVICE_VALID_POWER),
                 "failed power query must leave the power field unavailable");
     ASSERT_TRUE(snapshot.nvml_error == NVML_ERROR_NOT_SUPPORTED,
@@ -129,8 +126,7 @@ static int test_failed_field(const char *uuid)
     return PASS;
 }
 
-static int test_process_snapshot(const char *fixture_path, const char *uuid)
-{
+static int test_process_snapshot(const char *fixture_path, const char *uuid) {
     const unsigned long long alloc_bytes = 256ULL * 1024 * 1024;
     const long n_elements = (long)(alloc_bytes / sizeof(float));
     /* The fixture must outlive the observation window below. NVML only lists a
@@ -184,7 +180,8 @@ static int test_process_snapshot(const char *fixture_path, const char *uuid)
         poller_process_snapshot_destroy(&snapshot);
         return SKIP;
     }
-    ASSERT_TRUE(found != NULL, "fixture pid absent from compute/graphics process lists");
+    ASSERT_TRUE(found != NULL,
+                "fixture pid absent from compute/graphics process lists");
     ASSERT_TRUE(!poller_gpu_memory_value_valid(ULLONG_MAX),
                 "NOT_AVAILABLE sentinel must be classified as invalid");
     ASSERT_TRUE(poller_gpu_memory_value_valid(1024),
@@ -199,14 +196,13 @@ static int test_process_snapshot(const char *fixture_path, const char *uuid)
                 "NOT_AVAILABLE memory must not escape as a valid measurement");
     ASSERT_IN_RANGE(best_memory, alloc_bytes / 2, alloc_bytes * 4,
                     "NVML process memory should be plausible for the known allocation");
-    printf("PASS process pid=%u memory=%lluMiB sources=0x%x\n",
-           found->pid, best_memory / (1024 * 1024), found->source_flags);
+    printf("PASS process pid=%u memory=%lluMiB sources=0x%x\n", found->pid,
+           best_memory / (1024 * 1024), found->source_flags);
     poller_process_snapshot_destroy(&snapshot);
     return PASS;
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
     if (geteuid() != 0 || access("/dev/nvidiactl", F_OK) != 0) {
         printf("SKIP: root and an NVIDIA device are required\n");
         return SKIP;
@@ -217,8 +213,8 @@ int main(int argc, char **argv)
     }
 
     char fixture_path[512];
-    snprintf(fixture_path, sizeof(fixture_path),
-             "../../../kernels_to_trace/build/%s", argv[1]);
+    snprintf(fixture_path, sizeof(fixture_path), "../../../kernels_to_trace/build/%s",
+             argv[1]);
     if (access(fixture_path, X_OK) != 0) {
         fprintf(stderr, "FAIL: fixture missing: %s\n", fixture_path);
         return FAIL;
@@ -264,7 +260,6 @@ int main(int argc, char **argv)
         rc = SKIP;
 
     poller_shutdown();
-    printf("\npoller_test: %s\n",
-           rc == PASS ? "PASS" : (rc == SKIP ? "SKIP" : "FAIL"));
+    printf("\npoller_test: %s\n", rc == PASS ? "PASS" : (rc == SKIP ? "SKIP" : "FAIL"));
     return rc;
 }

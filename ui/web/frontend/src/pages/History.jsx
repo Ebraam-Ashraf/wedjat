@@ -1,8 +1,8 @@
 import React, { useMemo } from 'react';
-import { useApiData } from '../hooks/useApiData';
-import { MetricChart } from '../components/TelemetryCharts';
-import { formatBytes } from '../api';
-import SnapshotControls from '../components/SnapshotControls';
+import { useApiData } from '../hooks/useApiData.js';
+import { MetricChart } from '../components/TelemetryCharts.jsx';
+import { formatBytes } from '../api.js';
+import SnapshotControls from '../components/SnapshotControls.jsx';
 
 function historySample(row) {
   return {

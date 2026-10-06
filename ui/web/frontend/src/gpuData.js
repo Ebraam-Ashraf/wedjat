@@ -1,4 +1,4 @@
-import { formatBytes } from './api';
+import { formatBytes } from './api.js';
 
 export const API_NAMES = {
   1: 'Context set', 2: 'Context create', 3: 'Context destroy',

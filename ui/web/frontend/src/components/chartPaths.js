@@ -1,4 +1,4 @@
-import { monotoneBezierSegments } from './curve';
+import { monotoneBezierSegments } from './curve.js';
 
 export function latestValue(samples, field) {
   const sample = samples[samples.length - 1];

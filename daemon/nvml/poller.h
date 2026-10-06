@@ -80,7 +80,7 @@ struct process_snapshot {
     unsigned int count;
     struct process_entry *entries;
     int valid;
-    int complete; /* false if any supported source query failed */
+    int complete;  /* false if any supported source query failed */
     int truncated; /* set by bounded consumers that cannot return every entry */
     nvmlReturn_t nvml_error;
     nvmlReturn_t compute_error;

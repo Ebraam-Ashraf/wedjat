@@ -1,6 +1,6 @@
 import React, { memo } from 'react';
-import { useStoreValue } from '../hooks/useStoreValue';
-import { formatBytes } from '../api';
+import { useStoreValue } from '../hooks/useStoreValue.js';
+import { formatBytes } from '../api.js';
 
 // eBPF aggregates table.
 //

@@ -51,31 +51,31 @@
 /* ── event ids this file tracks ───────────────────────────────────────────
  * Change this list only when common.h's event_id enum changes.
  * The coverage check warns if no kernel triggered an id here. */
-static const u32  TRACKED_IDS[]   = { EVENT_MMAP, EVENT_IOCTL, EVENT_UVM_IOCTL,
-                                       EVENT_UVM_FAULT, EVENT_UVM_MIGRATE,
-                                       EVENT_UVM_EVICT };
-static const char *TRACKED_NAMES[] = { "MMAP", "IOCTL", "UVM_IOCTL",
-                                        "UVM_FAULT", "UVM_MIGRATE",
-                                        "UVM_EVICT" };
+static const u32 TRACKED_IDS[] = {EVENT_MMAP,      EVENT_IOCTL,       EVENT_UVM_IOCTL,
+                                  EVENT_UVM_FAULT, EVENT_UVM_MIGRATE, EVENT_UVM_EVICT};
+static const char *TRACKED_NAMES[] = {"MMAP",      "IOCTL",       "UVM_IOCTL",
+                                      "UVM_FAULT", "UVM_MIGRATE", "UVM_EVICT"};
 #define N_TRACKED (int)(sizeof(TRACKED_IDS) / sizeof(TRACKED_IDS[0]))
 
 /* ── ring buffer state ────────────────────────────────────────────────────
  * Reset per kernel; the callback only sees events from the pid we just ran. */
-static pid_t g_target_pid          = -1;
-static u64   g_run_counts[N_TRACKED];
-static bool  g_ever_covered[N_TRACKED];
-static bool  g_dump                = false;
+static pid_t g_target_pid = -1;
+static u64 g_run_counts[N_TRACKED];
+static bool g_ever_covered[N_TRACKED];
+static bool g_dump = false;
 
-static int handle_event(void *ctx, void *data, size_t sz)
-{
+static int handle_event(void *ctx, void *data, size_t sz) {
     (void)ctx;
-    if (sz < sizeof(struct event)) return 0;
+    if (sz < sizeof(struct event))
+        return 0;
 
     struct event *e = data;
-    if (e->tgid != (u32)g_target_pid) return 0;
+    if (e->tgid != (u32)g_target_pid)
+        return 0;
 
     for (int i = 0; i < N_TRACKED; i++) {
-        if (e->api_id != TRACKED_IDS[i]) continue;
+        if (e->api_id != TRACKED_IDS[i])
+            continue;
         g_run_counts[i]++;
         g_ever_covered[i] = true;
         break;
@@ -84,10 +84,8 @@ static int handle_event(void *ctx, void *data, size_t sz)
     if (g_dump)
         printf("    [event] api_id=%-2u dev=%u tid=%u addr=0x%llx bytes=%llu "
                "lat_ns=%llu status=%d\n",
-               e->api_id, e->device_ordinal, e->tid,
-               (unsigned long long)e->address,
-               (unsigned long long)e->bytes,
-               (unsigned long long)e->latency_ns,
+               e->api_id, e->device_ordinal, e->tid, (unsigned long long)e->address,
+               (unsigned long long)e->bytes, (unsigned long long)e->latency_ns,
                e->status);
 
     return 0;
@@ -95,23 +93,23 @@ static int handle_event(void *ctx, void *data, size_t sz)
 
 /* ── helpers ──────────────────────────────────────────────────────────────*/
 
-static bool env_on(const char *name)
-{
+static bool env_on(const char *name) {
     const char *v = getenv(name);
     return v && *v;
 }
 
 /* Fork a child that waits on a pipe before execl(). */
-static pid_t spawn_paused(const char *path, int *go_fd)
-{
+static pid_t spawn_paused(const char *path, int *go_fd) {
     int p[2];
-    if (pipe(p)) return -1;
+    if (pipe(p))
+        return -1;
 
     pid_t pid = fork();
     if (pid == 0) {
         char c;
         close(p[1]);
-        if (read(p[0], &c, 1) != 1) _exit(126);
+        if (read(p[0], &c, 1) != 1)
+            _exit(126);
         execl(path, path, (char *)NULL);
         _exit(127);
     }
@@ -121,25 +119,28 @@ static pid_t spawn_paused(const char *path, int *go_fd)
 }
 
 /* Release child and wait for it to finish. */
-static int release_and_wait(pid_t pid, int go_fd)
-{
+static int release_and_wait(pid_t pid, int go_fd) {
     int st = 0;
-    if (write(go_fd, "x", 1) != 1) perror("write");
+    if (write(go_fd, "x", 1) != 1)
+        perror("write");
     close(go_fd);
     waitpid(pid, &st, 0);
     return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 }
 
 /* Scan dir for executable files starting with 'k' and no dot in the name. */
-static int scan_kernels(const char *dir, char **paths, int max)
-{
+static int scan_kernels(const char *dir, char **paths, int max) {
     DIR *d = opendir(dir);
-    if (!d) { printf("FAIL: cannot open %s: %s\n", dir, strerror(errno)); return 0; }
+    if (!d) {
+        printf("FAIL: cannot open %s: %s\n", dir, strerror(errno));
+        return 0;
+    }
 
     int n = 0;
     struct dirent *e;
     while ((e = readdir(d)) != NULL && n < max) {
-        if (e->d_name[0] != 'k' || strchr(e->d_name, '.')) continue;
+        if (e->d_name[0] != 'k' || strchr(e->d_name, '.'))
+            continue;
         char path[512];
         snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
         if (access(path, X_OK) == 0)
@@ -150,22 +151,28 @@ static int scan_kernels(const char *dir, char **paths, int max)
     for (int i = 0; i < n - 1; i++)
         for (int j = i + 1; j < n; j++)
             if (strcmp(paths[i], paths[j]) > 0) {
-                char *tmp = paths[i]; paths[i] = paths[j]; paths[j] = tmp;
+                char *tmp = paths[i];
+                paths[i] = paths[j];
+                paths[j] = tmp;
             }
     return n;
 }
 
 /* ── main ─────────────────────────────────────────────────────────────────*/
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
     const char *dir = argc > 1 ? argv[1] : "build";
     g_dump = env_on("DUMP");
 
     /* 1. environment */
-    if (geteuid() != 0)        { printf("SKIP: run as root\n");   return SKIP; }
-    if (access("/dev/nvidiactl", F_OK) != 0)
-                               { printf("SKIP: no NVIDIA GPU\n"); return SKIP; }
+    if (geteuid() != 0) {
+        printf("SKIP: run as root\n");
+        return SKIP;
+    }
+    if (access("/dev/nvidiactl", F_OK) != 0) {
+        printf("SKIP: no NVIDIA GPU\n");
+        return SKIP;
+    }
 
     /* 2. load */
     printf("== driver_kprobes ==\n");
@@ -176,8 +183,9 @@ int main(int argc, char **argv)
     }
     printf("load    ok\n");
     u32 config_key = 0;
-    struct config_val config = { .flags = CONFIG_F_RAW_CAPTURE };
-    if (bpf_map_update_elem(bpf_map__fd(skel->maps.config_map), &config_key, &config, BPF_ANY) != 0) {
+    struct config_val config = {.flags = CONFIG_F_RAW_CAPTURE};
+    if (bpf_map_update_elem(bpf_map__fd(skel->maps.config_map), &config_key, &config,
+                            BPF_ANY) != 0) {
         printf("FAIL: cannot enable raw test capture\n");
         driver_kprobes_bpf__destroy(skel);
         return FAIL;
@@ -189,32 +197,40 @@ int main(int argc, char **argv)
      * uprobe tests do for a missing libcuda symbol) */
     printf("attach\n");
 
-#define H(sym)  { skel->progs.trace_##sym,      #sym, false, &skel->links.trace_##sym }
-#define HR(sym) { skel->progs.trace_##sym##_ret, #sym, true,  &skel->links.trace_##sym##_ret }
+#define H(sym)                                                                         \
+    { skel->progs.trace_##sym, #sym, false, &skel->links.trace_##sym }
+#define HR(sym)                                                                        \
+    { skel->progs.trace_##sym##_ret, #sym, true, &skel->links.trace_##sym##_ret }
 
     struct {
         struct bpf_program *prog;
-        const char         *sym;
-        bool                ret;
-        struct bpf_link   **slot;
+        const char *sym;
+        bool ret;
+        struct bpf_link **slot;
     } hooks[] = {
-        H(nvidia_mmap),                  HR(nvidia_mmap),
-        H(nvidia_ioctl),                 HR(nvidia_ioctl),
-        H(uvm_ioctl),                    HR(uvm_ioctl),
-        H(uvm_va_block_service_fault),   HR(uvm_va_block_service_fault),
-        H(uvm_migrate),                  HR(uvm_migrate),
-        H(uvm_va_block_evict_pages),     HR(uvm_va_block_evict_pages),
+        H(nvidia_mmap),
+        HR(nvidia_mmap),
+        H(nvidia_ioctl),
+        HR(nvidia_ioctl),
+        H(uvm_ioctl),
+        HR(uvm_ioctl),
+        H(uvm_va_block_service_fault),
+        HR(uvm_va_block_service_fault),
+        H(uvm_migrate),
+        HR(uvm_migrate),
+        H(uvm_va_block_evict_pages),
+        HR(uvm_va_block_evict_pages),
     };
 #undef H
 #undef HR
 
-    int n_hooks  = (int)(sizeof(hooks) / sizeof(hooks[0]));
+    int n_hooks = (int)(sizeof(hooks) / sizeof(hooks[0]));
     int attached = 0;
     for (int i = 0; i < n_hooks; i++) {
         struct bpf_link *l = bpf_program__attach(hooks[i].prog);
         if (!l) {
-            printf("  skip  %s%s (%s)\n",
-                   hooks[i].sym, hooks[i].ret ? "[ret]" : "", strerror(errno));
+            printf("  skip  %s%s (%s)\n", hooks[i].sym, hooks[i].ret ? "[ret]" : "",
+                   strerror(errno));
             continue;
         }
         *hooks[i].slot = l;
@@ -230,8 +246,8 @@ int main(int argc, char **argv)
 
     /* open the ring buffer once — same channel as cuda_actions, and same
      * reasoning: there's no hash map here to read back after the fact. */
-    struct ring_buffer *rb = ring_buffer__new(
-        bpf_map__fd(skel->maps.events_pipe), handle_event, NULL, NULL);
+    struct ring_buffer *rb =
+        ring_buffer__new(bpf_map__fd(skel->maps.events_pipe), handle_event, NULL, NULL);
     if (!rb) {
         printf("FAIL: ring_buffer__new failed\n");
         driver_kprobes_bpf__destroy(skel);
@@ -240,7 +256,7 @@ int main(int argc, char **argv)
 
     /* 4. loop kernels */
     char *kpaths[64];
-    int   nk = scan_kernels(dir, kpaths, 64);
+    int nk = scan_kernels(dir, kpaths, 64);
     if (nk == 0) {
         printf("SKIP: no k* binaries in %s\n", dir);
         ring_buffer__free(rb);
@@ -281,8 +297,10 @@ int main(int argc, char **argv)
         u64 total = 0;
         for (int i = 0; i < N_TRACKED; i++) {
             total += g_run_counts[i];
-            if (g_run_counts[i] == 0) printf("  %11s", ".");
-            else                      printf("  %11llu", (unsigned long long)g_run_counts[i]);
+            if (g_run_counts[i] == 0)
+                printf("  %11s", ".");
+            else
+                printf("  %11llu", (unsigned long long)g_run_counts[i]);
         }
 
         /* every CUDA call reaches the GPU through an ioctl, so IOCTL should

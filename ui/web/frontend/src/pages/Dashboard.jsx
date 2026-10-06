@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useStoreValue } from '../hooks/useStoreValue';
-import { useApiData } from '../hooks/useApiData';
-import { formatBytes, gpuMetaFor, throttleNames } from '../gpuData';
-import RealtimeChart from '../components/RealtimeChart';
-import Freshness, { useFreshness } from '../components/Freshness';
+import { useStoreValue } from '../hooks/useStoreValue.js';
+import { useApiData } from '../hooks/useApiData.js';
+import { formatBytes, gpuMetaFor, throttleNames } from '../gpuData.js';
+import RealtimeChart from '../components/RealtimeChart.jsx';
+import Freshness, { useFreshness } from '../components/Freshness.jsx';
 
 const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
 const bytesGB = (value) => value == null ? 'n/a' : `${(number(value) / 1073741824).toFixed(1)}g`;

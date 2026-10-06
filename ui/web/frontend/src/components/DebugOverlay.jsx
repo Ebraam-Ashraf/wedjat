@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { rafLoop } from '../store/rafLoop';
+import { rafLoop } from '../store/rafLoop.js';
 
 // Diagnostic overlay, shown with ?debug=1.
 //

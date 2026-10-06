@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { staleAfterMs } from '../store/telemetryStore';
+import { staleAfterMs } from '../store/telemetryStore.js';
 
 export function useFreshness(lastSampleAt, intervalMs) {
   const [now, setNow] = useState(() => performance.now());

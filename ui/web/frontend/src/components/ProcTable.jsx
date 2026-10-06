@@ -1,6 +1,6 @@
 import React, { memo, useEffect, useRef, useState } from 'react';
-import { useStoreValue } from '../hooks/useStoreValue';
-import { apiGet, formatBytes } from '../api';
+import { useStoreValue } from '../hooks/useStoreValue.js';
+import { apiGet, formatBytes } from '../api.js';
 
 // Top Processes table.
 //

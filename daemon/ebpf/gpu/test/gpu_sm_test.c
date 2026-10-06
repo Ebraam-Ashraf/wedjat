@@ -73,18 +73,18 @@
 
 /* ── event ids this file tracks ───────────────────────────────────────────
  * Change this list only when common.h's event_id enum changes. */
-static const u32  TRACKED_IDS[]   = { EVENT_SM_BLOCK_START, EVENT_SM_BLOCK_END };
-static const char *TRACKED_NAMES[] = { "START", "END" };
+static const u32 TRACKED_IDS[] = {EVENT_SM_BLOCK_START, EVENT_SM_BLOCK_END};
+static const char *TRACKED_NAMES[] = {"START", "END"};
 #define N_TRACKED (int)(sizeof(TRACKED_IDS) / sizeof(TRACKED_IDS[0]))
 
 /* ── ring buffer state ────────────────────────────────────────────────────
  * Reset per kernel; the callback only sees events from the pid we just ran. */
-static pid_t g_target_pid          = -1;
-static u64   g_run_counts[N_TRACKED];
-static bool  g_ever_covered[N_TRACKED];
-static bool  g_sm_seen[MAX_SMS];
-static bool  g_bad_event           = false;
-static bool  g_dump                = false;
+static pid_t g_target_pid = -1;
+static u64 g_run_counts[N_TRACKED];
+static bool g_ever_covered[N_TRACKED];
+static bool g_sm_seen[MAX_SMS];
+static bool g_bad_event = false;
+static bool g_dump = false;
 
 /* Per-block pairing. Counts alone cannot tell a correct run from a ring that
  * quietly dropped half its records, because a dropped START and its matching
@@ -107,27 +107,27 @@ static bool  g_dump                = false;
  * DUMP=1 ever shows START/END out of order, buffer and sort by ts_ns instead. */
 #define MAX_CTA 4096
 struct block_state {
-    u32         launches;   /* completed START/END pairs                    */
-    bool        open;       /* START seen, its END not seen yet             */
-    u32         start_sm;
-    u64         start_ts;
-    const char *problem;    /* first invariant this block broke             */
+    u32 launches; /* completed START/END pairs                    */
+    bool open;    /* START seen, its END not seen yet             */
+    u32 start_sm;
+    u64 start_ts;
+    const char *problem; /* first invariant this block broke             */
 };
 static struct block_state g_blocks[MAX_CTA];
-static int   g_max_cta              = 0;
-static const char *g_block_problem  = NULL;
+static int g_max_cta = 0;
+static const char *g_block_problem = NULL;
 
 /* Fold the per-block state into one verdict. Returns NULL when every block is
  * clean, else a complete "FAIL(...)" string. `iters` and `expect_blocks` come
  * from the same env vars the fixture's launch geometry derives from, so a
  * mismatch means records were lost rather than that the expectation is wrong. */
-static const char *block_problem(long iters, long expect_blocks)
-{
+static const char *block_problem(long iters, long expect_blocks) {
     static char buf[96];
     long nblocks = 0;
     for (int c = 0; c < g_max_cta; c++) {
         struct block_state *b = &g_blocks[c];
-        if (b->launches == 0 && !b->open && !b->problem) continue;
+        if (b->launches == 0 && !b->open && !b->problem)
+            continue;
         nblocks++;
         /* First violation wins: later ones are usually consequences of it. */
         if (b->problem) {
@@ -142,8 +142,8 @@ static const char *block_problem(long iters, long expect_blocks)
             return "FAIL(a block did not report once per launch)";
     }
     if (nblocks != expect_blocks) {
-        snprintf(buf, sizeof(buf),
-                 "FAIL(%ld blocks reported, expected %ld)", nblocks, expect_blocks);
+        snprintf(buf, sizeof(buf), "FAIL(%ld blocks reported, expected %ld)", nblocks,
+                 expect_blocks);
         return buf;
     }
     return NULL;
@@ -158,24 +158,26 @@ static const char *block_problem(long iters, long expect_blocks)
  *                                            bpf_get_current_pid_tgid isn't
  *                                            the host pid
  * Neither is visible in the per-kernel rows on its own. */
-static u64   g_poll_calls           = 0;
-static u64   g_cb_calls             = 0;
+static u64 g_poll_calls = 0;
+static u64 g_cb_calls = 0;
 
 typedef int (*poll_gpu_fn)(int mapfd, void *ctx,
                            void (*cb)(const void *data, uint64_t size, void *ctx));
 
-static void handle_event(const void *data, uint64_t size, void *ctx)
-{
+static void handle_event(const void *data, uint64_t size, void *ctx) {
     (void)ctx;
     g_cb_calls++;
 
-    if (size < sizeof(struct dev_event)) return;
+    if (size < sizeof(struct dev_event))
+        return;
 
     const struct dev_event *e = data;
-    if (e->pid != (u32)g_target_pid) return;
+    if (e->pid != (u32)g_target_pid)
+        return;
 
     for (int i = 0; i < N_TRACKED; i++) {
-        if (e->api_id != TRACKED_IDS[i]) continue;
+        if (e->api_id != TRACKED_IDS[i])
+            continue;
         g_run_counts[i]++;
         g_ever_covered[i] = true;
         break;
@@ -196,11 +198,13 @@ static void handle_event(const void *data, uint64_t size, void *ctx)
                         (unsigned long)e->ctaid_y * 65536UL +
                         (unsigned long)e->ctaid_z * 4294967296UL;
     if (cta >= MAX_CTA) {
-        if (!g_block_problem) g_block_problem = "ctaid beyond MAX_CTA";
+        if (!g_block_problem)
+            g_block_problem = "ctaid beyond MAX_CTA";
         return;
     }
     struct block_state *b = &g_blocks[cta];
-    if ((int)cta + 1 > g_max_cta) g_max_cta = (int)cta + 1;
+    if ((int)cta + 1 > g_max_cta)
+        g_max_cta = (int)cta + 1;
 
     if (e->api_id == EVENT_SM_BLOCK_START) {
         /* Only the first violation is kept: later ones are usually
@@ -208,7 +212,7 @@ static void handle_event(const void *data, uint64_t size, void *ctx)
          * look unpaired), and the first is the one that points at the cause. */
         if (b->open && !b->problem)
             b->problem = "a block reported START twice without an END";
-        b->open     = true;
+        b->open = true;
         b->start_sm = e->sm_id;
         b->start_ts = e->ts_ns;
     } else if (e->api_id == EVENT_SM_BLOCK_END) {
@@ -229,26 +233,25 @@ static void handle_event(const void *data, uint64_t size, void *ctx)
 
     if (g_dump)
         printf("    [event] %s sm=%u ctaid=(%u,%u,%u) ts=%llu\n",
-               e->api_id == EVENT_SM_BLOCK_START ? "START" : "END  ",
-               e->sm_id, e->ctaid_x, e->ctaid_y, e->ctaid_z,
-               (unsigned long long)e->ts_ns);
+               e->api_id == EVENT_SM_BLOCK_START ? "START" : "END  ", e->sm_id,
+               e->ctaid_x, e->ctaid_y, e->ctaid_z, (unsigned long long)e->ts_ns);
 }
 
 /* ── helpers ──────────────────────────────────────────────────────────────*/
 
-static bool env_on(const char *name)
-{
+static bool env_on(const char *name) {
     const char *v = getenv(name);
     return v && *v;
 }
 
-static long env_long(const char *name, long fallback)
-{
+static long env_long(const char *name, long fallback) {
     const char *v = getenv(name);
-    if (!v || !*v) return fallback;
+    if (!v || !*v)
+        return fallback;
     char *end = NULL;
     long parsed = strtol(v, &end, 10);
-    if (end == v || parsed <= 0) return fallback;
+    if (end == v || parsed <= 0)
+        return fallback;
     return parsed;
 }
 
@@ -259,14 +262,20 @@ static long env_long(const char *name, long fallback)
  * expected n/a) from "it has the kernel but nothing arrived" (k4), which are
  * very different results and used to be indistinguishable.
  * Verify with: strings build/k1 | grep scale_add  */
-static bool file_contains(const char *path, const char *needle)
-{
+static bool file_contains(const char *path, const char *needle) {
     FILE *f = fopen(path, "rb");
-    if (!f) return false;
-    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
+    if (!f)
+        return false;
+    if (fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return false;
+    }
     long n = ftell(f);
     rewind(f);
-    if (n <= 0) { fclose(f); return false; }
+    if (n <= 0) {
+        fclose(f);
+        return false;
+    }
     char *buf = malloc((size_t)n);
     bool hit = false;
     if (buf && fread(buf, 1, (size_t)n, f) == (size_t)n)
@@ -283,23 +292,23 @@ static bool file_contains(const char *path, const char *needle)
  * the gap visible as XFAIL instead of hiding it, and turns into XPASS the day
  * bpftime grows a __cudaLaunchKernel hook — at which point remove the entry
  * and update daemon/ebpf/gpu/README.md. */
-static bool known_untraced(const char *name)
-{
+static bool known_untraced(const char *name) {
     return strcmp(name, "k4") == 0;
 }
 
 /* Fork a child that waits on a pipe before execl(), with bpftime's agent
  * preloaded so the probes reach the CUDA kernels it launches. */
-static pid_t spawn_paused(const char *path, const char *agent, int *go_fd)
-{
+static pid_t spawn_paused(const char *path, const char *agent, int *go_fd) {
     int p[2];
-    if (pipe(p)) return -1;
+    if (pipe(p))
+        return -1;
 
     pid_t pid = fork();
     if (pid == 0) {
         char c;
         close(p[1]);
-        if (read(p[0], &c, 1) != 1) _exit(126);
+        if (read(p[0], &c, 1) != 1)
+            _exit(126);
         setenv("LD_PRELOAD", agent, 1);
         execl(path, path, (char *)NULL);
         _exit(127);
@@ -310,22 +319,25 @@ static pid_t spawn_paused(const char *path, const char *agent, int *go_fd)
 }
 
 /* Release child, but do NOT wait for it here — we need to poll while it runs. */
-static void release_child(int go_fd)
-{
-    if (write(go_fd, "x", 1) != 1) perror("write");
+static void release_child(int go_fd) {
+    if (write(go_fd, "x", 1) != 1)
+        perror("write");
     close(go_fd);
 }
 
 /* Scan dir for executable files starting with 'k' and no dot in the name. */
-static int scan_kernels(const char *dir, char **paths, int max)
-{
+static int scan_kernels(const char *dir, char **paths, int max) {
     DIR *d = opendir(dir);
-    if (!d) { printf("FAIL: cannot open %s: %s\n", dir, strerror(errno)); return 0; }
+    if (!d) {
+        printf("FAIL: cannot open %s: %s\n", dir, strerror(errno));
+        return 0;
+    }
 
     int n = 0;
     struct dirent *e;
     while ((e = readdir(d)) != NULL && n < max) {
-        if (e->d_name[0] != 'k' || strchr(e->d_name, '.')) continue;
+        if (e->d_name[0] != 'k' || strchr(e->d_name, '.'))
+            continue;
         char path[512];
         snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
         if (access(path, X_OK) == 0)
@@ -336,7 +348,9 @@ static int scan_kernels(const char *dir, char **paths, int max)
     for (int i = 0; i < n - 1; i++)
         for (int j = i + 1; j < n; j++)
             if (strcmp(paths[i], paths[j]) > 0) {
-                char *tmp = paths[i]; paths[i] = paths[j]; paths[j] = tmp;
+                char *tmp = paths[i];
+                paths[i] = paths[j];
+                paths[j] = tmp;
             }
     return n;
 }
@@ -349,17 +363,16 @@ static int scan_kernels(const char *dir, char **paths, int max)
  * Warnings are always shown: they are how a rejected object announces itself. */
 static bool g_libbpf_debug;
 
-static int libbpf_log(enum libbpf_print_level level, const char *fmt, va_list args)
-{
-    if (level == LIBBPF_DEBUG && !g_libbpf_debug) return 0;
+static int libbpf_log(enum libbpf_print_level level, const char *fmt, va_list args) {
+    if (level == LIBBPF_DEBUG && !g_libbpf_debug)
+        return 0;
     const char *tag = level == LIBBPF_WARN ? "warn" : "debug";
     fprintf(stderr, "  [libbpf %s] ", tag);
     vfprintf(stderr, fmt, args);
     return 0;
 }
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
     /* Line-buffer stdout. The Makefile redirects it to a file, and a file is
      * block-buffered by default, so every printf() here would sit in a buffer
      * until exit while the forked children — which write straight to the same
@@ -375,16 +388,21 @@ int main(int argc, char **argv)
     g_dump = env_on("DUMP");
 
     const char *home = getenv("HOME");
-    char        agent_buf[512];
+    char agent_buf[512];
     snprintf(agent_buf, sizeof(agent_buf), "%s/.bpftime/libbpftime-agent.so",
              home ? home : "/root");
     const char *agent = env_on("BPFTIME_AGENT") ? getenv("BPFTIME_AGENT") : agent_buf;
 
     /* 1. environment — the extra checks over the other tests are what makes
      *    this one run under bpftime instead of the Linux kernel */
-    if (geteuid() != 0)        { printf("SKIP: run as root\n");   return SKIP; }
-    if (access("/dev/nvidiactl", F_OK) != 0)
-                               { printf("SKIP: no NVIDIA GPU\n"); return SKIP; }
+    if (geteuid() != 0) {
+        printf("SKIP: run as root\n");
+        return SKIP;
+    }
+    if (access("/dev/nvidiactl", F_OK) != 0) {
+        printf("SKIP: no NVIDIA GPU\n");
+        return SKIP;
+    }
     if (!env_on("LD_PRELOAD") || !strstr(getenv("LD_PRELOAD"), "bpftime")) {
         printf("SKIP: run under bpftime, e.g.\n"
                "  sudo LD_PRELOAD=$HOME/.bpftime/libbpftime-syscall-server.so %s\n",
@@ -412,21 +430,24 @@ int main(int argc, char **argv)
 /* bpftime identifies a GPU program by its eBPF function name starting with
  * "cuda__" (bpftime_prog::is_cuda), so the skeleton fields carry that prefix
  * too: cuda__trace_sm_block / cuda__trace_sm_block_ret. */
-#define H(sym)  { skel->progs.cuda__##sym,      #sym, false, &skel->links.cuda__##sym }
-#define HR(sym) { skel->progs.cuda__##sym##_ret, #sym, true,  &skel->links.cuda__##sym##_ret }
+#define H(sym)                                                                         \
+    { skel->progs.cuda__##sym, #sym, false, &skel->links.cuda__##sym }
+#define HR(sym)                                                                        \
+    { skel->progs.cuda__##sym##_ret, #sym, true, &skel->links.cuda__##sym##_ret }
 
     struct {
         struct bpf_program *prog;
-        const char         *sym;
-        bool                ret;
-        struct bpf_link   **slot;
+        const char *sym;
+        bool ret;
+        struct bpf_link **slot;
     } hooks[] = {
-        H(trace_sm_block), HR(trace_sm_block),
+        H(trace_sm_block),
+        HR(trace_sm_block),
     };
 #undef H
 #undef HR
 
-    int n_hooks  = (int)(sizeof(hooks) / sizeof(hooks[0]));
+    int n_hooks = (int)(sizeof(hooks) / sizeof(hooks[0]));
     int attached = 0;
     for (int i = 0; i < n_hooks; i++) {
         struct bpf_link *l = bpf_program__attach(hooks[i].prog);
@@ -434,8 +455,7 @@ int main(int argc, char **argv)
          * a plain !l test would print "attached" for an error. */
         long err = libbpf_get_error(l);
         if (err || !l) {
-            printf("  skip  %s%s (%s)\n",
-                   hooks[i].sym, hooks[i].ret ? "[ret]" : "",
+            printf("  skip  %s%s (%s)\n", hooks[i].sym, hooks[i].ret ? "[ret]" : "",
                    err ? strerror((int)-err) : "null link");
             continue;
         }
@@ -450,15 +470,16 @@ int main(int argc, char **argv)
                "        function name for the \"cuda__\" prefix)\n");
 
     if (attached == 0) {
-        printf("SKIP: no hooks attached — is bpftime built with CUDA attach support?\n");
+        printf(
+            "SKIP: no hooks attached — is bpftime built with CUDA attach support?\n");
         gpu_sm_bpf__destroy(skel);
         return SKIP;
     }
 
     /* events are read through bpftime, not libbpf: the GPU ringbuf map is not
      * a kernel BPF_MAP_TYPE_RINGBUF, so ring_buffer__new refuses it */
-    poll_gpu_fn poll_fn = dlsym(RTLD_DEFAULT,
-                                "bpftime_syscall_server__poll_gpu_ringbuf_map");
+    poll_gpu_fn poll_fn =
+        dlsym(RTLD_DEFAULT, "bpftime_syscall_server__poll_gpu_ringbuf_map");
     if (!poll_fn) {
         printf("SKIP: bpftime poll function not found — not running under bpftime?\n");
         gpu_sm_bpf__destroy(skel);
@@ -468,7 +489,7 @@ int main(int argc, char **argv)
 
     /* 4. loop kernels */
     char *kpaths[64];
-    int   nk = scan_kernels(dir, kpaths, 64);
+    int nk = scan_kernels(dir, kpaths, 64);
     if (nk == 0) {
         printf("SKIP: no k* binaries in %s\n", dir);
         gpu_sm_bpf__destroy(skel);
@@ -494,13 +515,13 @@ int main(int argc, char **argv)
      * the ring count. Reading the env var the Makefile sets keeps a single
      * source of truth instead of two numbers that can drift apart silently. */
     const long ring_threads = env_long("BPFTIME_MAP_GPU_THREAD_COUNT", 8192);
-    const long n_elems     = env_long("WEDJAT_N", 1 << 20);
-    const long iters       = env_long("WEDJAT_ITERS", 20);
-    const long block_dim   = 256;  /* k1's only; the hooked kernel is k1's */
+    const long n_elems = env_long("WEDJAT_N", 1 << 20);
+    const long iters = env_long("WEDJAT_ITERS", 20);
+    const long block_dim = 256; /* k1's only; the hooked kernel is k1's */
     long grid_blocks = (n_elems + block_dim - 1) / block_dim;
-    long cap_blocks  = ring_threads / block_dim;
+    long cap_blocks = ring_threads / block_dim;
     long expect_blocks = grid_blocks < cap_blocks ? grid_blocks : cap_blocks;
-    long expect_each  = expect_blocks * iters;
+    long expect_each = expect_blocks * iters;
 
     for (int k = 0; k < nk; k++) {
         const char *kname = strrchr(kpaths[k], '/') + 1;
@@ -554,7 +575,10 @@ int main(int argc, char **argv)
             for (int i = 0; i < 64; i++) {
                 poll_ret = poll_fn(mapfd, NULL, handle_event);
                 g_poll_calls++;
-                if (poll_ret < 0) { perr = 1; break; }
+                if (poll_ret < 0) {
+                    perr = 1;
+                    break;
+                }
             }
         }
         /* final drain: keep going until nothing new arrives */
@@ -562,14 +586,19 @@ int main(int argc, char **argv)
             u64 before = g_cb_calls;
             poll_ret = poll_fn(mapfd, NULL, handle_event);
             g_poll_calls++;
-            if (poll_ret < 0) { perr = 1; break; }
-            if (g_cb_calls == before) break;
+            if (poll_ret < 0) {
+                perr = 1;
+                break;
+            }
+            if (g_cb_calls == before)
+                break;
         }
         int rc = child_reaped && WIFEXITED(st) ? WEXITSTATUS(st) : -1;
 
         int nsm = 0;
         for (int i = 0; i < MAX_SMS; i++)
-            if (g_sm_seen[i]) nsm++;
+            if (g_sm_seen[i])
+                nsm++;
         u64 total = g_run_counts[0] + g_run_counts[1];
 
         /* Decide the verdict first, then print one row. Ordering it this way
@@ -590,12 +619,15 @@ int main(int argc, char **argv)
         const char *perr_str;
 
         if (perr) {
-            verdict = "FAIL(poll error)";              row_fail = true;
+            verdict = "FAIL(poll error)";
+            row_fail = true;
         } else if (!child_reaped) {
-            verdict = "FAIL(waitpid error)";           row_fail = true;
+            verdict = "FAIL(waitpid error)";
+            row_fail = true;
         } else if (rc != 0) {
             snprintf(vbuf, sizeof(vbuf), "FAIL(exit %d)", rc);
-            verdict = vbuf;                           row_fail = true;
+            verdict = vbuf;
+            row_fail = true;
         } else if (total == 0) {
             if (!has_target)
                 verdict = "n/a (target kernel not in this binary)";
@@ -610,24 +642,29 @@ int main(int argc, char **argv)
              * drop it from known_untraced() and update the README. */
             verdict = "XPASS (now traced: drop from known_untraced())";
         } else if (g_bad_event) {
-            verdict = "FAIL(bad ts_ns or sm_id)";       row_fail = true;
+            verdict = "FAIL(bad ts_ns or sm_id)";
+            row_fail = true;
         } else if (g_run_counts[0] != g_run_counts[1]) {
             snprintf(vbuf, sizeof(vbuf), "FAIL(start %llu != end %llu)",
                      (unsigned long long)g_run_counts[0],
                      (unsigned long long)g_run_counts[1]);
-            verdict = vbuf;                           row_fail = true;
+            verdict = vbuf;
+            row_fail = true;
         } else if ((long)g_run_counts[0] != expect_each) {
             /* The count must be exactly right, not merely balanced. A ring that
              * dropped records still gives start == end, and 5 == 5 is
              * indistinguishable from correct without the expectation. */
             snprintf(vbuf, sizeof(vbuf), "FAIL(start %llu != expected %ld)",
                      (unsigned long long)g_run_counts[0], expect_each);
-            verdict = vbuf;                           row_fail = true;
+            verdict = vbuf;
+            row_fail = true;
         } else if (g_block_problem) {
             snprintf(vbuf, sizeof(vbuf), "FAIL(%s)", g_block_problem);
-            verdict = vbuf;                           row_fail = true;
+            verdict = vbuf;
+            row_fail = true;
         } else if ((perr_str = block_problem(iters, expect_blocks))) {
-            verdict = perr_str;                        row_fail = true;
+            verdict = perr_str;
+            row_fail = true;
         }
 
         /* One row per fixture, same shape as cuda_actions_test: kernel, the
@@ -636,13 +673,18 @@ int main(int argc, char **argv)
          * tests. */
         printf("  %-10s", kname);
         for (int i = 0; i < N_TRACKED; i++) {
-            if (g_run_counts[i] == 0) printf("  %10s", ".");
-            else printf("  %10llu", (unsigned long long)g_run_counts[i]);
+            if (g_run_counts[i] == 0)
+                printf("  %10s", ".");
+            else
+                printf("  %10llu", (unsigned long long)g_run_counts[i]);
         }
-        if (nsm == 0) printf("  %5s", ".");
-        else          printf("  %5d", nsm);
+        if (nsm == 0)
+            printf("  %5s", ".");
+        else
+            printf("  %5d", nsm);
         printf("  %s\n", verdict);
-        if (row_fail) fail = 1;
+        if (row_fail)
+            fail = 1;
     }
 
     for (int k = 0; k < nk; k++)
@@ -673,16 +715,14 @@ int main(int argc, char **argv)
      * other tests. These two are the only ways the poll path can be broken
      * without any row noticing. */
     if (!g_cb_calls) {
-        printf("\npoll: %llu calls, 0 callbacks\n",
-               (unsigned long long)g_poll_calls);
+        printf("\npoll: %llu calls, 0 callbacks\n", (unsigned long long)g_poll_calls);
         printf("  nothing reached the callback. In build/bpftime.log:\n"
                "    '[ptxpass] ... matched=N'  probe injected into the PTX\n"
                "    'Copying map fd ...'         the ring reached the GPU\n"
                "    'Ignored dirty pages'        the poll loop losing records\n");
     } else if (!g_ever_covered[0] && !g_ever_covered[1]) {
         printf("\npoll: %llu calls, %llu callbacks, none matched\n",
-               (unsigned long long)g_poll_calls,
-               (unsigned long long)g_cb_calls);
+               (unsigned long long)g_poll_calls, (unsigned long long)g_cb_calls);
         printf("  the pid filter is dropping everything, so the device-side\n"
                "  bpf_get_current_pid_tgid is not the host pid\n");
     }

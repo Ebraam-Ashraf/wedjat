@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { apiGet } from '../api';
+import { apiGet } from '../api.js';
 
 export function useApiData(path, { refreshIntervalMs = 0 } = {}) {
   const [state, setState] = useState({ data: null, loading: true, error: '', updatedAt: null });

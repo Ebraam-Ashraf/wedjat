@@ -1,12 +1,12 @@
 import React from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { useStoreValue } from '../hooks/useStoreValue';
-import { useApiData } from '../hooks/useApiData';
-import { formatBytes, throttleNames } from '../gpuData';
-import RealtimeChart from '../components/RealtimeChart';
-import { SmEstimate } from '../components/SmEstimate';
-import { ArchitectureIllustration } from '../components/SmEstimate';
-import Freshness, { useFreshness } from '../components/Freshness';
+import { useStoreValue } from '../hooks/useStoreValue.js';
+import { useApiData } from '../hooks/useApiData.js';
+import { formatBytes, throttleNames } from '../gpuData.js';
+import RealtimeChart from '../components/RealtimeChart.jsx';
+import { SmEstimate } from '../components/SmEstimate.jsx';
+import { ArchitectureIllustration } from '../components/SmEstimate.jsx';
+import Freshness, { useFreshness } from '../components/Freshness.jsx';
 
 function DetailChart({ store, sample, field, title, unit, yDomain, yTicks, yFormat, scale }) {
   return <div className="panel metric-chart">

@@ -1,8 +1,8 @@
 import React from 'react';
-import { useStoreValue } from '../hooks/useStoreValue';
-import { useApiData } from '../hooks/useApiData';
-import { API_NAMES, throttleNames } from '../gpuData';
-import SnapshotControls from '../components/SnapshotControls';
+import { useStoreValue } from '../hooks/useStoreValue.js';
+import { useApiData } from '../hooks/useApiData.js';
+import { API_NAMES, throttleNames } from '../gpuData.js';
+import SnapshotControls from '../components/SnapshotControls.jsx';
 
 function liveEventText(event) {
   if (event.type === 'xid') return { title: `Xid ${event.data?.Code}`, details: `GPU ${event.data?.Index} · ${event.data?.UUID || 'UUID n/a'}` };

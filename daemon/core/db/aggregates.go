@@ -165,9 +165,15 @@ func (db *DB) writeIncidentTx(ctx context.Context, tx *sql.Tx, incident Incident
 	if incident.Type == "" || incident.DedupeKey == "" {
 		return 0, errors.New("db: incident type and dedupe key are required")
 	}
-	if len(incident.DedupeKey) > 512 { return 0, fmt.Errorf("db: incident dedupe key too long (%d bytes, max 512)",len(incident.DedupeKey)) }
-	if incident.FirstTS < 0 || incident.LastTS < 0 { return 0, errors.New("db: negative incident timestamp") }
-	if incident.FirstTS > incident.LastTS { incident.FirstTS,incident.LastTS=incident.LastTS,incident.FirstTS }
+	if len(incident.DedupeKey) > 512 {
+		return 0, fmt.Errorf("db: incident dedupe key too long (%d bytes, max 512)", len(incident.DedupeKey))
+	}
+	if incident.FirstTS < 0 || incident.LastTS < 0 {
+		return 0, errors.New("db: negative incident timestamp")
+	}
+	if incident.FirstTS > incident.LastTS {
+		incident.FirstTS, incident.LastTS = incident.LastTS, incident.FirstTS
+	}
 	// Fold into the existing row when one is still recent, so a repeating
 	// problem is one incident with a rising occurrence count.
 	//

@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
-import { LIVE_WINDOW_MS } from '../store/telemetryStore';
-import { rafLoop } from '../store/rafLoop';
-import { latestValue, pathFor, renderCursorTime } from './chartPaths';
+import { LIVE_WINDOW_MS } from '../store/telemetryStore.js';
+import { rafLoop } from '../store/rafLoop.js';
+import { latestValue, pathFor, renderCursorTime } from './chartPaths.js';
 
 const WIDTH = 320;
 const HEIGHT = 64;

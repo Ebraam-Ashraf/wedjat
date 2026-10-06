@@ -1,16 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, Route, Routes, useLocation } from 'react-router-dom';
-import { apiGet } from './api';
-import { TelemetryStore } from './store/telemetryStore';
-import { useStoreValue } from './hooks/useStoreValue';
-import { DEBUG } from './flags';
-import StatusBar from './components/StatusBar';
-import DebugOverlay from './components/DebugOverlay';
-import Live from './pages/Dashboard';
-import Processes from './pages/Processes';
-import Events from './pages/Events';
-import History from './pages/History';
-import GpuDetail from './pages/GpuDetail';
+import { apiGet } from './api.js';
+import { TelemetryStore } from './store/telemetryStore.js';
+import { useStoreValue } from './hooks/useStoreValue.js';
+import { DEBUG } from './flags.js';
+import StatusBar from './components/StatusBar.jsx';
+import DebugOverlay from './components/DebugOverlay.jsx';
+import Live from './pages/Dashboard.jsx';
+import Processes from './pages/Processes.jsx';
+import Events from './pages/Events.jsx';
+import History from './pages/History.jsx';
+import GpuDetail from './pages/GpuDetail.jsx';
 
 export default function App() {
   const store = useMemo(() => new TelemetryStore(), []);

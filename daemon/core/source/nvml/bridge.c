@@ -101,15 +101,15 @@ void collector_snapshot_gpu(const char *uuid, struct collector_gpu_snap *snap) {
     snap->valid_fields = ds.valid_fields;
 
     if (ds.valid_fields & DEVICE_VALID_GPU_UTIL)
-        snap->gpu_util  = ds.gpu_util;
+        snap->gpu_util = ds.gpu_util;
     if (ds.valid_fields & DEVICE_VALID_MEM_UTIL)
-        snap->mem_util  = ds.mem_util;
+        snap->mem_util = ds.mem_util;
     if (ds.valid_fields & DEVICE_VALID_MEM_USED)
-        snap->mem_used  = ds.mem_used;
+        snap->mem_used = ds.mem_used;
     if (ds.valid_fields & DEVICE_VALID_TEMP)
-        snap->temp_c    = ds.temp_c;
+        snap->temp_c = ds.temp_c;
     if (ds.valid_fields & DEVICE_VALID_POWER)
-        snap->power_mw  = ds.power_mw;
+        snap->power_mw = ds.power_mw;
     if (ds.valid_fields & DEVICE_VALID_SM_CLOCK)
         snap->sm_clock_mhz = ds.sm_clock_mhz;
     if (ds.valid_fields & DEVICE_VALID_MEM_CLOCK)
@@ -156,7 +156,7 @@ void collector_snapshot_procs(const char *uuid, struct collector_proc_list *list
     list->count = cap;
 
     for (unsigned int i = 0; i < cap; i++) {
-        list->entries[i].pid        = ps.entries[i].pid;
+        list->entries[i].pid = ps.entries[i].pid;
         list->entries[i].vram_bytes = ps.entries[i].used_gpu_memory;
         list->entries[i].vram_valid = ps.entries[i].memory_valid;
     }
@@ -167,7 +167,8 @@ void *collector_xid_create(void) {
     return xid_event_set_create();
 }
 
-int collector_xid_wait(void *opaque, struct collector_xid_event *out, unsigned int timeout_ms) {
+int collector_xid_wait(void *opaque, struct collector_xid_event *out,
+                       unsigned int timeout_ms) {
     if (!opaque || !out)
         return XID_WAIT_ERROR;
     struct xid_event event;

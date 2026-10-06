@@ -9,22 +9,24 @@ import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Use the project's daemon dev directory (relative to this file's location)
-const baseDir = path.join(__dirname, '..', 'dev');
+const production = process.env.WEDJAT_PRODUCTION === '1';
+// Use the repository daemon dev directory relative to this file.
+const baseDir = path.join(__dirname, '..', '..', 'daemon', 'dev');
 const socketPath = path.join(baseDir, 'run', 'wedjat.sock');
 const dataDir = path.join(baseDir, 'var', 'lib', 'wedjat');
 
 const app = express();
 const server = createServer(app);
 
-// Vite dev middleware — serves the React app with HMR, no build needed.
-// It is mounted last: its SPA fallback answers every unmatched GET with
-// index.html, so any route registered after it would never be reached.
-const vite = await createViteServer({
-  root: path.join(__dirname, 'frontend'),
-  server: { middlewareMode: true, hmr: { server } },
-  appType: 'spa',
-});
+let vite = null;
+if (!production) {
+  // Development middleware serves the React app with HMR and no build step.
+  vite = await createViteServer({
+    root: path.join(__dirname, 'frontend'),
+    server: { middlewareMode: true, hmr: { server } },
+    appType: 'spa',
+  });
+}
 
 // --- Unix socket bridge: persistent background connection ---
 
@@ -366,17 +368,23 @@ server.on('upgrade', (request, socket, head) => {
   // Vite registers its own upgrade listener for the HMR socket, which uses
   // the `vite-hmr` subprotocol on "/". Destroying it here would silently kill
   // hot reload, so leave any other upgrade to the listener that owns it.
-  if (request.headers['sec-websocket-protocol'] === 'vite-hmr') return;
+  if (!production && request.headers['sec-websocket-protocol'] === 'vite-hmr') return;
   socket.destroy();
 });
 
-// Mounted after every API route: the SPA fallback answers all unmatched GETs
-// with index.html and would shadow any route registered below it.
-app.use(vite.middlewares);
+// Production serves the compiled frontend directly; development delegates to
+// Vite so HMR remains available.
+if (production) {
+  const frontendDir = path.join(__dirname, 'frontend', 'dist');
+  app.use(express.static(frontendDir));
+  app.get('*', (req, res) => res.sendFile(path.join(frontendDir, 'index.html')));
+} else {
+  app.use(vite.middlewares);
+}
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Wedjat Dev UI server running on http://localhost:${PORT}`);
+  console.log(`Wedjat ${production ? 'UI' : 'Dev UI'} server running on http://localhost:${PORT}`);
   console.log('Socket path:', socketPath);
   console.log('Data dir:', dataDir);
 });

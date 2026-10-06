@@ -18,8 +18,7 @@
 static pid_t target_pid;
 static unsigned int exit_events;
 
-static int handle_event(void *ctx, void *data, size_t size)
-{
+static int handle_event(void *ctx, void *data, size_t size) {
     struct event *event = data;
     (void)ctx;
 
@@ -29,8 +28,7 @@ static int handle_event(void *ctx, void *data, size_t size)
     return 0;
 }
 
-static void *wait_for_release(void *arg)
-{
+static void *wait_for_release(void *arg) {
     int fd = *(int *)arg;
     char byte;
     if (read(fd, &byte, 1) != 1)
@@ -38,8 +36,7 @@ static void *wait_for_release(void *arg)
     return NULL;
 }
 
-static int poll_for(struct ring_buffer *ring, int duration_ms)
-{
+static int poll_for(struct ring_buffer *ring, int duration_ms) {
     struct timespec start, now;
     clock_gettime(CLOCK_MONOTONIC, &start);
     do {
@@ -56,8 +53,7 @@ static int poll_for(struct ring_buffer *ring, int duration_ms)
     return 0;
 }
 
-int main(void)
-{
+int main(void) {
     struct proc_lifecycle_bpf *skel;
     struct ring_buffer *ring = NULL;
     struct process_seen_val seen = {};
@@ -79,8 +75,8 @@ int main(void)
         proc_lifecycle_bpf__destroy(skel);
         return FAIL;
     }
-    ring = ring_buffer__new(bpf_map__fd(skel->maps.events_pipe),
-                            handle_event, NULL, NULL);
+    ring =
+        ring_buffer__new(bpf_map__fd(skel->maps.events_pipe), handle_event, NULL, NULL);
     if (!ring) {
         fprintf(stderr, "FAIL: could not create ring buffer\n");
         proc_lifecycle_bpf__destroy(skel);
@@ -99,8 +95,7 @@ int main(void)
         close(main_gate[1]);
         close(ready[0]);
         for (int i = 0; i < 3; i++) {
-            if (pthread_create(&threads[i], NULL, wait_for_release,
-                               &workers[0]) != 0)
+            if (pthread_create(&threads[i], NULL, wait_for_release, &workers[0]) != 0)
                 _exit(10);
         }
         if (write(ready[1], "r", 1) != 1)
@@ -130,8 +125,8 @@ int main(void)
     }
     close(ready[0]);
     u32 pid = (u32)target_pid;
-    if (bpf_map_update_elem(bpf_map__fd(skel->maps.seen_processes),
-                            &pid, &seen, BPF_ANY) != 0) {
+    if (bpf_map_update_elem(bpf_map__fd(skel->maps.seen_processes), &pid, &seen,
+                            BPF_ANY) != 0) {
         perror("bpf_map_update_elem");
         kill(target_pid, SIGKILL);
         waitpid(target_pid, NULL, 0);
@@ -153,8 +148,7 @@ int main(void)
     }
 
     if (write(main_gate[1], "x", 1) != 1 ||
-        waitpid(target_pid, &status, 0) != target_pid ||
-        poll_for(ring, 250) != 0) {
+        waitpid(target_pid, &status, 0) != target_pid || poll_for(ring, 250) != 0) {
         fprintf(stderr, "FAIL: final process exit polling failed\n");
         return FAIL;
     }
@@ -167,6 +161,7 @@ int main(void)
         fprintf(stderr, "FAIL: expected one final exit event, got %u\n", exit_events);
         return FAIL;
     }
-    puts("PASS: three worker exits emitted no process exit; final thread emitted exactly one");
+    puts("PASS: three worker exits emitted no process exit; final thread emitted "
+         "exactly one");
     return 0;
 }

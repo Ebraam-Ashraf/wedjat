@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
-import ScopeRenderer from './scopeRenderer';
-import { rafLoop } from '../store/rafLoop';
-import { SYNTHETIC } from '../flags';
+import ScopeRenderer from './scopeRenderer.js';
+import { rafLoop } from '../store/rafLoop.js';
+import { SYNTHETIC } from '../flags.js';
 
 // A live scope.
 //
