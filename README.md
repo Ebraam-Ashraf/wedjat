@@ -97,6 +97,7 @@ sudo make uninstall       # Remove installed Wedjat; keep build artifacts
 sudo make clean           # Remove installed Wedjat and all build artifacts
 sudo make ci              # Format and test the daemon/eBPF path
 sudo make help            # Show command help
+./scripts/install-private.sh  # Install a private GitHub release for testing (requires gh auth)
 ```
 
 `make ci` formats Go and C/C++ sources, builds the development daemon, runs Go,
