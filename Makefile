@@ -13,6 +13,7 @@ GOARCH ?= amd64
 RELEASE_NAME := wedjat-linux-$(GOARCH)
 ARCHIVE := $(DIST_DIR)/$(RELEASE_NAME).tar.gz
 .DEFAULT_GOAL := build
+NODE_MODULES_VERSION := $(shell node -p 'process.versions.modules' 2>/dev/null || printf unknown)
 
 .PHONY: build release install uninstall clean help ci
 
@@ -31,6 +32,7 @@ build:
 	command -v npm >/dev/null || { echo 'build requires npm' >&2; exit 1; }
 	command -v node >/dev/null || { echo 'build requires node' >&2; exit 1; }
 	command -v tar >/dev/null || { echo 'build requires tar' >&2; exit 1; }
+	[ "$(NODE_MODULES_VERSION)" != unknown ] || { echo 'could not determine Node.js module ABI' >&2; exit 1; }
 
 	$(MAKE) -C "$(DAEMON_DIR)" GOARCH=$(GOARCH) release
 	( cd "$(FRONTEND_DIR)" && npm ci && npm run build )
@@ -54,6 +56,7 @@ build:
 	cp "$(UI_DIR)/package.json" "$(UI_DIR)/package-lock.json" "$(STAGE_DIR)/ui/"
 	cp -R "$(FRONTEND_DIR)/dist" "$(STAGE_DIR)/ui/frontend/"
 	( cd "$(STAGE_DIR)/ui" && npm ci --omit=dev )
+	( cd "$(STAGE_DIR)/ui" && node -e "require('better-sqlite3')" )
 
 	# Embed the UI runtime behind the top-level wedjat command.
 	cat > "$(STAGE_DIR)/wedjat" <<'LAUNCHER'
@@ -101,6 +104,12 @@ build:
 	  echo 'wedjat: node.js is required to open the dashboard' >&2
 	  exit 1
 	}
+	actual_node_abi=$$(node -p 'process.versions.modules')
+	if [ "$$actual_node_abi" != "$(NODE_MODULES_VERSION)" ]; then
+	  echo "wedjat: incompatible Node.js runtime (release ABI $(NODE_MODULES_VERSION), installed ABI $$actual_node_abi)" >&2
+	  echo 'wedjat: install the Node.js major version used to build this release, then run wedjat again' >&2
+	  exit 1
+	fi
 	runtime_dir=$$(mktemp -d "$${TMPDIR:-/tmp}/wedjat.XXXXXX")
 	cleanup() { rm -rf -- "$$runtime_dir"; }
 	trap cleanup EXIT INT TERM
