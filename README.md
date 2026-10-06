@@ -15,7 +15,17 @@
 * **OS**: Linux (Tested on Ubuntu 22.04+)
 * **Hardware**: NVIDIA GPU
 * **Drivers**: NVIDIA Proprietary Driver installed
-* **Runtime**: Node.js is required by the installed dashboard launcher.
+* **Runtime**: Node.js 22 is required by the installed dashboard launcher. The
+	release includes a native `better-sqlite3` module built for Node.js 22.
+
+Install Node.js 22 before installing Wedjat:
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+node -v          # should say v22.x
+sudo node -v     # should also say v22.x
+```
 
 The published release currently provides a Linux amd64 artifact. The daemon uses
 the installed NVIDIA driver and does not require CUDA source compilation at
