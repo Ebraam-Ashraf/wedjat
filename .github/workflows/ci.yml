@@ -19,7 +19,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            clang llvm clang-format libbpf-dev libnvidia-ml-dev \
+            clang llvm clang-format libbpf-dev libnvidia-ml-dev nvidia-cuda-dev \
             nvidia-cuda-toolkit linux-headers-generic linux-tools-common \
             linux-tools-generic pkg-config
 
@@ -34,8 +34,13 @@ jobs:
 
       - name: Configure CUDA toolkit path
         run: |
-          NVML_HEADER="$(find /usr/local/cuda* /usr/include /usr/lib/nvidia-cuda-toolkit -type f -name nvml.h -print -quit 2>/dev/null)"
-          test -n "$NVML_HEADER"
+          NVML_HEADER="$(find /usr/local /usr/include /usr/lib/nvidia-cuda-toolkit -type f -name nvml.h -print -quit 2>/dev/null || true)"
+          if [ -z "$NVML_HEADER" ]; then
+            echo "nvml.h not found. Searching the filesystem:"
+            find / -name 'nvml.h' 2>/dev/null || true
+            dpkg -L libnvidia-ml-dev nvidia-cuda-dev nvidia-cuda-toolkit 2>/dev/null | grep -i nvml || true
+            exit 1
+          fi
           CUDA_HOME="$(dirname "$(dirname "$NVML_HEADER")")"
           echo "CUDA_HOME=$CUDA_HOME" >> "$GITHUB_ENV"
           echo "Using CUDA_HOME=$CUDA_HOME"
