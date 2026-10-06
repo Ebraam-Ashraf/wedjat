@@ -32,14 +32,15 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang llvm libbpf-dev linux-headers-generic linux-tools-common linux-tools-generic pkg-config
+          sudo apt-get install -y clang llvm libbpf-dev libnvidia-ml-dev nvidia-cuda-toolkit linux-headers-generic linux-tools-common linux-tools-generic pkg-config
           
       - name: Install BPFTool
         run: |
-          sudo apt-get install -y linux-tools-$(uname -r) || echo "Kernel specific tools not found, using generic"
-          # Ensure bpftool is accessible
-          if ! command -v bpftool &> /dev/null; then
-            sudo apt-get install -y bpftool
+          sudo apt-get install -y linux-tools-$(uname -r) || true
+          if ! command -v bpftool >/dev/null 2>&1; then
+            BPFTOOL_PATH="$(find /usr/lib/linux-tools -type f -name bpftool -executable | sort -V | tail -n 1)"
+            test -n "$BPFTOOL_PATH"
+            sudo ln -sf "$BPFTOOL_PATH" /usr/local/bin/bpftool
           fi
 
       - name: Build Release Artifacts

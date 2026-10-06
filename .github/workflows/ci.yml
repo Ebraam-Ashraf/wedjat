@@ -6,7 +6,7 @@ on:
 
 jobs:
   checks:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
@@ -19,8 +19,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            clang llvm clang-format libbpf-dev linux-headers-generic \
-            linux-tools-common linux-tools-generic bpftool pkg-config
+            clang llvm clang-format libbpf-dev libnvidia-ml-dev \
+            nvidia-cuda-toolkit linux-headers-generic linux-tools-common \
+            linux-tools-generic pkg-config
+
+      - name: Install bpftool command
+        run: |
+          sudo apt-get install -y linux-tools-$(uname -r) || true
+          if ! command -v bpftool >/dev/null 2>&1; then
+            BPFTOOL_PATH="$(find /usr/lib/linux-tools -type f -name bpftool -executable | sort -V | tail -n 1)"
+            test -n "$BPFTOOL_PATH"
+            sudo ln -sf "$BPFTOOL_PATH" /usr/local/bin/bpftool
+          fi
 
       - name: Run project checks
         run: make ci
