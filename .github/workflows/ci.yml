@@ -46,4 +46,6 @@ jobs:
           echo "Using CUDA_HOME=$CUDA_HOME"
 
       - name: Run project checks
+        env:
+          CUDA_ARCH: sm_86
         run: make ci
