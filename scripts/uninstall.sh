@@ -7,7 +7,7 @@ systemctl disable --now wedjatd || true
 
 echo "[2/4] removing unit + binaries..."
 rm -f /etc/systemd/system/wedjatd.service
-rm -f /usr/local/bin/wedjatd /usr/local/bin/wedjat
+rm -f /usr/local/bin/wedjatd /usr/local/bin/wedjat /usr/local/bin/wedjat-uninstall
 # The compiled BPF objects are daemon code, not collected data, so they go with
 # the binaries.
 rm -rf /usr/local/lib/wedjat

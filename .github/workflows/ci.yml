@@ -2,7 +2,13 @@ name: ci
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   checks:
@@ -25,12 +31,13 @@ jobs:
 
       - name: Install bpftool command
         run: |
-          sudo apt-get install -y linux-tools-$(uname -r) || true
-          if ! command -v bpftool >/dev/null 2>&1; then
+          sudo apt-get install -y bpftool || true
+          if ! bpftool version >/dev/null 2>&1; then
             BPFTOOL_PATH="$(find /usr/lib/linux-tools -type f -name bpftool -executable | sort -V | tail -n 1)"
             test -n "$BPFTOOL_PATH"
             sudo ln -sf "$BPFTOOL_PATH" /usr/local/bin/bpftool
           fi
+          bpftool version
 
       - name: Configure CUDA toolkit path
         run: |

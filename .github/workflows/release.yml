@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-and-release:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -36,12 +36,13 @@ jobs:
           
       - name: Install BPFTool
         run: |
-          sudo apt-get install -y linux-tools-$(uname -r) || true
-          if ! command -v bpftool >/dev/null 2>&1; then
+          sudo apt-get install -y bpftool || true
+          if ! bpftool version >/dev/null 2>&1; then
             BPFTOOL_PATH="$(find /usr/lib/linux-tools -type f -name bpftool -executable | sort -V | tail -n 1)"
             test -n "$BPFTOOL_PATH"
             sudo ln -sf "$BPFTOOL_PATH" /usr/local/bin/bpftool
           fi
+          bpftool version
 
       - name: Configure CUDA toolkit path
         run: |
@@ -59,6 +60,12 @@ jobs:
       - name: Build Release Artifacts
         run: |
           make release GOARCH=amd64
+
+      - name: Verify release archive
+        run: |
+          cd dist
+          sha256sum -c wedjat-linux-amd64.tar.gz.sha256
+          tar -tzf wedjat-linux-amd64.tar.gz >/dev/null
           
       - name: Upload Release to GitHub
         uses: softprops/action-gh-release@v2
