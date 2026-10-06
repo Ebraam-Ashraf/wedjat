@@ -119,8 +119,14 @@ build-inputs:
 #   make test BPFTIME_SERVER=/path/libbpftime-syscall-server.so
 #   make test BPFTIME_AGENT=/path/libbpftime-agent.so
 
-BPFTIME_SERVER ?= $(HOME)/.bpftime/libbpftime-syscall-server.so
-BPFTIME_AGENT  ?= $(HOME)/.bpftime/libbpftime-agent.so
+# When invoked via `sudo make`, $(HOME) expands to /root rather than the
+# invoking user's home. Use $SUDO_USER to find the real home directory, and
+# fall back to $(HOME) when not running under sudo.
+_REAL_USER  := $(if $(SUDO_USER),$(SUDO_USER),$(USER))
+_REAL_HOME  := $(shell getent passwd $(_REAL_USER) | cut -d: -f6)
+
+BPFTIME_SERVER ?= $(_REAL_HOME)/.bpftime/libbpftime-syscall-server.so
+BPFTIME_AGENT  ?= $(_REAL_HOME)/.bpftime/libbpftime-agent.so
 
 # bpftime narrates its own bootstrap at [info] — cuobjdump, ptxas, module
 # loads, fatbin cache hits — once per fixture, four times over.

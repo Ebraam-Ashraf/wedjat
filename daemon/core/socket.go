@@ -23,9 +23,16 @@ const acceptRetryDelay = 100 * time.Millisecond
 // is considered gone and disconnected.
 const writeDeadline = 5 * time.Second
 
-// perClientBufSize is the number of pre-encoded messages that can be queued
-// per client. A slow client loses messages before it stalls others.
-const perClientBufSize = 8
+// perClientBufSize is the number of non-GPU messages that can be queued per
+// client. GPU samples have their own larger queue so process/event traffic
+// cannot evict graph samples.
+const perClientBufSize = 32
+const perClientGPUBufferSize = 128
+
+type clientQueues struct {
+	gpu   chan []byte
+	other chan []byte
+}
 
 // wireMsg is the JSON envelope sent to every connected client.
 type wireMsg struct {
@@ -68,7 +75,7 @@ type SocketServer struct {
 	wg       sync.WaitGroup
 
 	mu      sync.Mutex
-	clients map[net.Conn]chan []byte
+	clients map[net.Conn]*clientQueues
 }
 
 // StartSocket creates and starts a unix socket server using the default options.
@@ -113,7 +120,7 @@ func StartSocketWithOptions(path string, sock source.Chans, options SocketOption
 		listener: listener,
 		ctx:      ctx,
 		cancel:   cancel,
-		clients:  make(map[net.Conn]chan []byte),
+		clients:  make(map[net.Conn]*clientQueues),
 	}
 
 	server.wg.Add(2)
@@ -151,13 +158,17 @@ func (s *SocketServer) acceptLoop() {
 
 		// Per-client buffered channel; sized so a slow client loses messages
 		// before it can block the broadcaster.
-		clientCh := make(chan []byte, perClientBufSize)
+		clientCh := &clientQueues{
+			gpu:   make(chan []byte, perClientGPUBufferSize),
+			other: make(chan []byte, perClientBufSize),
+		}
 
 		s.mu.Lock()
 		s.clients[conn] = clientCh
 		s.mu.Unlock()
 
 		source.Clients.Add(1)
+		log.Printf("Socket: new client connected (total: %d)", source.Clients.Load())
 
 		s.wg.Add(2)
 		go s.readClient(conn)
@@ -177,26 +188,54 @@ func (s *SocketServer) readClient(conn net.Conn) {
 
 // writeClient drains the per-client channel and writes each encoded message
 // to the connection. It exits when the channel is closed or on a write error.
-func (s *SocketServer) writeClient(conn net.Conn, ch chan []byte) {
+func (s *SocketServer) writeClient(conn net.Conn, queues *clientQueues) {
 	defer s.wg.Done()
 	defer s.removeClient(conn)
 
 	for {
+		// Prefer GPU samples so a burst of process/event messages cannot hold
+		// the live charts behind a non-GPU backlog.
 		select {
 		case <-s.ctx.Done():
 			return
-		case msg, ok := <-ch:
+		case msg, ok := <-queues.gpu:
 			if !ok {
 				return
 			}
-			if err := conn.SetWriteDeadline(time.Now().Add(writeDeadline)); err != nil {
+			if !s.writeMessage(conn, msg) {
 				return
 			}
-			if _, err := conn.Write(msg); err != nil {
+			continue
+		default:
+		}
+
+		select {
+		case <-s.ctx.Done():
+			return
+		case msg, ok := <-queues.gpu:
+			if !ok {
+				return
+			}
+			if !s.writeMessage(conn, msg) {
+				return
+			}
+		case msg, ok := <-queues.other:
+			if !ok {
+				return
+			}
+			if !s.writeMessage(conn, msg) {
 				return
 			}
 		}
 	}
+}
+
+func (s *SocketServer) writeMessage(conn net.Conn, msg []byte) bool {
+	if err := conn.SetWriteDeadline(time.Now().Add(writeDeadline)); err != nil {
+		return false
+	}
+	_, err := conn.Write(msg)
+	return err == nil
 }
 
 // removeClient closes and deregisters a client connection.
@@ -210,18 +249,58 @@ func (s *SocketServer) removeClient(conn net.Conn) {
 
 	if exists {
 		source.Clients.Add(-1)
+		log.Printf("Socket: client disconnected (total: %d)", source.Clients.Load())
 		conn.Close()
 	}
 }
 
+// sendToClient queues one already-encoded message for a single client, never
+// blocking the broadcaster.
+//
+// When the queue is full the OLDEST message is discarded rather than the new
+// one. Live telemetry is only useful while it is current: dropping the newest
+// would leave a briefly slow client permanently behind, because it would keep
+// draining a backlog it can never catch up on, and its chart would never reach
+// the right edge. Dropping the oldest lets such a client jump straight back to
+// current, and a client that keeps up never sees a difference.
+//
+// Every discarded message is counted in source.Dropped, which the database
+// heartbeat already reports, so client-side loss shows up in the log instead of
+// being silently invisible.
+func sendToClient(ch chan []byte, msg []byte) bool {
+	dropped := false
+	for attempt := 0; attempt < 2; attempt++ {
+		select {
+		case ch <- msg:
+			return dropped
+		default:
+		}
+
+		// Queue is full: make room by discarding the oldest message.
+		select {
+		case <-ch:
+			source.Dropped.Add(1)
+			dropped = true
+		default:
+			// The client's writer drained the queue between the two
+			// selects, so nothing was lost. Retry the send.
+		}
+	}
+	// Two attempts still could not land the message, so this client is not
+	// draining its queue at all. Give up rather than stall every other
+	// client; any message already discarded above is counted.
+	return dropped
+}
+
 // broadcastLoop selects over all five source channels, encodes each message
 // once, and offers it to every connected client's per-client channel.
-// Slow clients lose messages; they never stall others.
+// Slow clients lose their oldest messages; they never stall others.
 func (s *SocketServer) broadcastLoop() {
 	defer s.wg.Done()
 
 	for {
 		var msg []byte
+		var msgType string
 		var err error
 
 		select {
@@ -236,18 +315,21 @@ func (s *SocketServer) broadcastLoop() {
 				continue
 			}
 			ts := gpus[0].TsNano
+			msgType = "gpu"
 			msg, err = encodeMsg("gpu", ts, gpus)
 
 		case pl, ok := <-s.sock.Procs:
 			if !ok {
 				return
 			}
+			msgType = "procs"
 			msg, err = encodeMsg("procs", pl.TsNano, pl)
 
 		case xid, ok := <-s.sock.Xid:
 			if !ok {
 				return
 			}
+			msgType = "xid"
 			msg, err = encodeMsg("xid", xid.TsNano, xid)
 
 		case agg, ok := <-s.sock.Agg:
@@ -258,12 +340,14 @@ func (s *SocketServer) broadcastLoop() {
 				continue
 			}
 			ts := agg[0].TsNano
+			msgType = "agg"
 			msg, err = encodeMsg("agg", ts, agg)
 
 		case ev, ok := <-s.sock.Event:
 			if !ok {
 				return
 			}
+			msgType = "event"
 			msg, err = encodeMsg("event", int64(ev.TsNano), ev)
 		}
 
@@ -276,11 +360,17 @@ func (s *SocketServer) broadcastLoop() {
 		msg = append(msg, '\n')
 
 		s.mu.Lock()
-		for _, ch := range s.clients {
-			select {
-			case ch <- msg:
-			default:
-				// Client is too slow; drop this message for them.
+		for _, queues := range s.clients {
+			queue := queues.other
+			if msgType == "gpu" {
+				queue = queues.gpu
+			}
+			if sendToClient(queue, msg) {
+				if msgType == "gpu" {
+					source.DroppedGPU.Add(1)
+				} else {
+					source.DroppedOther.Add(1)
+				}
 			}
 		}
 		s.mu.Unlock()
@@ -293,10 +383,14 @@ func (s *SocketServer) Stop() error {
 	s.listener.Close()
 
 	s.mu.Lock()
-	for conn, ch := range s.clients {
-		close(ch)
+	for conn, queues := range s.clients {
+		close(queues.gpu)
+		close(queues.other)
 		conn.Close()
 		delete(s.clients, conn)
+		// Account for the clients torn down here, which never reach
+		// removeClient because the map entry is already gone.
+		source.Clients.Add(-1)
 	}
 	s.mu.Unlock()
 

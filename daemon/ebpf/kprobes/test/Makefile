@@ -62,7 +62,7 @@ $(BUILD)/driver_kprobes.bpf.o: $(BPF_SRC_DIR)/driver_kprobes.bpf.c \
 $(BUILD)/driver_kprobes.skel.h: $(BUILD)/driver_kprobes.bpf.o
 	$(BPFTOOL) gen skeleton $< > $@
 
-$(BUILD)/proc_lifecycle.bpf.o: ../../proc_lifecycle.bpf.c ../../common.h $(BUILD)/vmlinux.h | $(BUILD)/.d
+$(BUILD)/proc_lifecycle.bpf.o: ../../proc/proc_lifecycle.bpf.c ../../common.h $(BUILD)/vmlinux.h | $(BUILD)/.d
 	$(BPF_CC) $(BPF_CFLAGS) -c $< -o $@
 
 $(BUILD)/proc_lifecycle.skel.h: $(BUILD)/proc_lifecycle.bpf.o

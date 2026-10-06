@@ -65,7 +65,7 @@ test: build-dev
 	@$(MAKE) -C nvml/test test
 	@echo ""
 	@echo "==> eBPF verifier load"
-	@sudo $(MAKE) -C ebpf/test verify
+	@sudo $(MAKE) -C ebpf/proc/test verify
 
 clean:
 	@echo "==> Removing build artifacts (needs sudo for dev/)"
@@ -74,7 +74,7 @@ clean:
 	@echo "==> Removing eBPF objects"
 	@rm -rf ebpf/build
 	@echo "==> Removing test binaries"
-	@rm -rf nvml/test/build ebpf/test/build ebpf/uprobes/test/build ebpf/kprobes/test/build ebpf/gpu/test/build
+	@rm -rf nvml/test/build ebpf/proc/test/build ebpf/uprobes/test/build ebpf/kprobes/test/build ebpf/gpu/test/build
 	@echo "==> Removing CUDA fixtures"
 	@-$(MAKE) -C $(REPO_DIR)/kernels_to_trace clean
 	@echo "==> Clean."

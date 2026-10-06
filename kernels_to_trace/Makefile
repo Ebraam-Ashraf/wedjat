@@ -1,4 +1,18 @@
-NVCC ?= nvcc
+# Auto-detect nvcc: prefer whatever is in PATH, then fall back to common
+# CUDA install locations. This handles the common case where nvcc exists but
+# is not in sudo's stripped PATH.
+ifeq ($(shell command -v nvcc 2>/dev/null),)
+    NVCC := $(firstword $(wildcard \
+        /usr/local/cuda/bin/nvcc \
+        /usr/local/cuda-*/bin/nvcc \
+        /usr/cuda/bin/nvcc \
+        /opt/cuda/bin/nvcc))
+    ifeq ($(NVCC),)
+        $(error nvcc not found. Install the CUDA toolkit or set NVCC=/path/to/nvcc)
+    endif
+else
+    NVCC ?= nvcc
+endif
 BUILD := build
 
 # bpftime's CUDA attach works by extracting the PTX out of a fatbin, patching
@@ -17,7 +31,7 @@ VIRTUAL_ARCH := compute_$(patsubst sm_%,%,$(if $(NATIVE_ARCH),$(NATIVE_ARCH),sm_
 NVCCFLAGS := -arch=native --cudart shared -g \
             -gencode arch=$(VIRTUAL_ARCH),code=$(VIRTUAL_ARCH)
 
-.PHONY: all build clean
+.PHONY: all build run clean
 
 # 'build' is a phony alias for 'all'.
 # Do NOT list $(BUILD) as a prerequisite here — that would clash with .PHONY: build
@@ -29,6 +43,12 @@ build: all
 $(BUILD)/%: %.cu
 	@mkdir -p $(BUILD)
 	$(NVCC) $(NVCCFLAGS) -o $@ $<
+
+run: all
+	@for prog in $(BUILD)/*; do \
+		echo "--- Running $$prog ---"; \
+		$$prog; \
+	done
 
 clean:
 	rm -rf $(BUILD)

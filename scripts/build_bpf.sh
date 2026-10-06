@@ -18,7 +18,7 @@ bpftool btf dump file /sys/kernel/btf/vmlinux format c > daemon/ebpf/build/vmlin
 BPF_CFLAGS+=" -Idaemon/ebpf/build -Idaemon/ebpf"
 
 for src in daemon/ebpf/kprobes/driver_kprobes.bpf.c \
-           daemon/ebpf/proc_lifecycle.bpf.c \
+           daemon/ebpf/proc/proc_lifecycle.bpf.c \
            daemon/ebpf/uprobes/cuda_actions.bpf.c \
            daemon/ebpf/uprobes/host_ctx.bpf.c; do
     base=$(basename "$src" .bpf.c)

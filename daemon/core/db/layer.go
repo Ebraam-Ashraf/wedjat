@@ -123,6 +123,8 @@ func (l *Layer) run(ctx context.Context, dbc source.Chans) {
 	defer heartbeatTicker.Stop()
 	var lastUnattributed uint64
 	lastDropped := source.Dropped.Load()
+	lastDroppedGPU := source.DroppedGPU.Load()
+	lastDroppedOther := source.DroppedOther.Load()
 	for {
 		select {
 		case <-ctx.Done():
@@ -158,8 +160,15 @@ func (l *Layer) run(ctx context.Context, dbc source.Chans) {
 			}
 			lastUnattributed = current
 			dropped := source.Dropped.Load()
-			if dropped > lastDropped { log.Printf("Warning: source channels/retry queue dropped %d telemetry row(s)", dropped-lastDropped) }
+			droppedGPU := source.DroppedGPU.Load()
+			droppedOther := source.DroppedOther.Load()
+			if dropped > lastDropped {
+				log.Printf("Warning: telemetry queues dropped %d item(s) total (GPU batches: %d; non-GPU client messages: %d)",
+					dropped-lastDropped, droppedGPU-lastDroppedGPU, droppedOther-lastDroppedOther)
+			}
 			lastDropped = dropped
+			lastDroppedGPU = droppedGPU
+			lastDroppedOther = droppedOther
 		}
 	}
 }

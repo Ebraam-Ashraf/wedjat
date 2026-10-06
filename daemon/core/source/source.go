@@ -135,8 +135,10 @@ func NewChans(buf int) Chans {
 
 // Global counters for client tracking and dropped messages
 var (
-	Clients atomic.Int32  // Number of connected socket clients
-	Dropped atomic.Uint64 // Count of messages dropped due to full channels
+	Clients      atomic.Int32  // Number of connected socket clients
+	Dropped      atomic.Uint64 // Count of messages dropped due to full channels
+	DroppedGPU   atomic.Uint64 // GPU batches dropped by a source or client queue
+	DroppedOther atomic.Uint64 // Non-GPU messages dropped by a client queue
 )
 
 // Send sends a value to a channel non-blockingly. If the channel is full,
@@ -146,5 +148,16 @@ func Send[T any](ch chan T, v T) {
 	case ch <- v:
 	default:
 		Dropped.Add(1)
+	}
+}
+
+// SendGPU sends a GPU batch without blocking and keeps GPU loss separately
+// visible from unrelated telemetry drops.
+func SendGPU(ch chan []GPUSample, v []GPUSample) {
+	select {
+	case ch <- v:
+	default:
+		Dropped.Add(1)
+		DroppedGPU.Add(1)
 	}
 }
