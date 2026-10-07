@@ -1,4 +1,4 @@
-module github.com/Ebraam-Ashraf/wedjat/daemon
+module github.com/Ebraam-Ashraf/wedjat
 
 go 1.25
 

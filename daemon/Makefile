@@ -34,7 +34,7 @@ kernels:
 build-dev: bpf
 	@echo "==> Building development daemon"
 	@mkdir -p $(DEV_BUILD_DIR)
-	@cd $(DAEMON_DIR) && $(GO_ENV) $(GO) build -o $(DEV_BUILD_DIR)/wedjatd-dev ./cmd/wedjatd-dev
+	@cd $(DAEMON_DIR) && $(GO_ENV) $(GO) build -o $(DEV_BUILD_DIR)/wedjatd-dev $(REPO_DIR)/cmd/wedjatd-dev
 	@echo "Built: $(DEV_BUILD_DIR)/wedjatd-dev"
 
 dev: build-dev
@@ -43,10 +43,10 @@ dev: build-dev
 	@sudo $(DEV_BUILD_DIR)/wedjatd-dev
 
 release: bpf
-	@test -f cmd/wedjatd/main.go || { echo "release blocked: cmd/wedjatd/main.go does not exist" >&2; exit 2; }
+	@test -f $(REPO_DIR)/cmd/wedjatd/main.go || { echo "release blocked: cmd/wedjatd/main.go does not exist" >&2; exit 2; }
 	@echo "==> Building production release"
 	@mkdir -p "$(DIST_DIR)"
-	@cd $(DAEMON_DIR) && $(GO_ENV) $(GO) build -trimpath -ldflags='-s -w' -o "$(DIST_DIR)/wedjatd" ./cmd/wedjatd
+	@cd $(DAEMON_DIR) && $(GO_ENV) $(GO) build -trimpath -ldflags='-s -w' -o "$(DIST_DIR)/wedjatd" $(REPO_DIR)/cmd/wedjatd
 	@install -m 0755 $(REPO_DIR)/scripts/uninstall.sh "$(DIST_DIR)/wedjat-uninstall"
 	@install -m 0644 $(REPO_DIR)/scripts/config.yaml "$(DIST_DIR)/config.yaml"
 	@install -m 0644 $(REPO_DIR)/scripts/wedjatd.service "$(DIST_DIR)/wedjatd.service"

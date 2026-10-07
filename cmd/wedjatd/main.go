@@ -3,7 +3,7 @@ package main
 import (
 	"log"
 
-	"github.com/Ebraam-Ashraf/wedjat/daemon/internal/daemon"
+	"github.com/Ebraam-Ashraf/wedjat/internal/daemon"
 )
 
 var paths = daemon.Paths{

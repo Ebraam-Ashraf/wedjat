@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/Ebraam-Ashraf/wedjat/daemon/internal/daemon"
+	"github.com/Ebraam-Ashraf/wedjat/internal/daemon"
 )
 
 // rawPaths uses relative paths that are resolved to absolute below so the lock
