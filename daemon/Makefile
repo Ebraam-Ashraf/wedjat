@@ -4,29 +4,28 @@ DAEMON_DIR := $(CURDIR)
 REPO_DIR   := $(abspath $(CURDIR)/..)
 
 GOARCH ?= amd64
-DIST_DIR := $(DAEMON_DIR)/dist
-DEV_BUILD_DIR := $(DAEMON_DIR)/dev/build
-RELEASE_NAME ?= wedjat-linux-$(GOARCH)
+DIST_DIR := $(REPO_DIR)/dist
+DEV_BUILD_DIR := $(DIST_DIR)/dev
 
 GO_ENV := CGO_ENABLED=1 GOOS=linux GOARCH=$(GOARCH)
 
 GO_CANDIDATES := /usr/local/go/bin/go /usr/lib/go/bin/go
 GO := $(firstword $(wildcard $(GO_CANDIDATES)) go)
 
-.PHONY: all help dev build-dev release test clean bpf kernels
+.PHONY: all help build-dev run-dev build-release test clean bpf kernels
 
 all: build-dev
 
 help:
-	@echo "Wedjat Daemon - Makefile"
-	@echo "  make               Build development daemon (no run)"
-	@echo "  make dev           Build and run development daemon"
-	@echo "  make test          Build and run all unit tests"
-	@echo "  make release       Build production release into dist/"
-	@echo "  make clean         Delete all build artifacts"
+	@echo "Wedjat Daemon — Makefile"
+	@echo "  make               Build development daemon"
+	@echo "  make run-dev       Build and run dev daemon (needs sudo for eBPF)"
+	@echo "  make build-release Build production daemon into dist/"
+	@echo "  make test          Run all daemon tests"
+	@echo "  make clean         Delete build artifacts"
 
 bpf:
-	@cd $(REPO_DIR) && ./scripts/build_bpf.sh
+	@cd $(REPO_DIR) && ./daemon/ebpf/build.sh
 
 kernels:
 	@$(MAKE) -C $(REPO_DIR)/kernels_to_trace build
@@ -34,47 +33,45 @@ kernels:
 build-dev: bpf
 	@echo "==> Building development daemon"
 	@mkdir -p $(DEV_BUILD_DIR)
-	@cd $(DAEMON_DIR) && $(GO_ENV) $(GO) build -o $(DEV_BUILD_DIR)/wedjatd-dev $(REPO_DIR)/cmd/wedjatd-dev
+	@cd $(REPO_DIR) && $(GO_ENV) $(GO) build -o $(DEV_BUILD_DIR)/wedjatd-dev ./daemon/cmd/wedjatd-dev
 	@echo "Built: $(DEV_BUILD_DIR)/wedjatd-dev"
 
-dev: build-dev
+run-dev: build-dev
 	@echo "==> Running development daemon"
 	@echo "    (Press Ctrl+C to stop)"
 	@sudo $(DEV_BUILD_DIR)/wedjatd-dev
 
-release: bpf
-	@test -f $(REPO_DIR)/cmd/wedjatd/main.go || { echo "release blocked: cmd/wedjatd/main.go does not exist" >&2; exit 2; }
-	@echo "==> Building production release"
+build-release: bpf
+	@test -f $(DAEMON_DIR)/cmd/wedjatd/main.go || { echo "release blocked: daemon/cmd/wedjatd/main.go does not exist" >&2; exit 2; }
+	@echo "==> Building production daemon"
 	@mkdir -p "$(DIST_DIR)"
-	@cd $(DAEMON_DIR) && $(GO_ENV) $(GO) build -trimpath -ldflags='-s -w' -o "$(DIST_DIR)/wedjatd" $(REPO_DIR)/cmd/wedjatd
-	@install -m 0755 $(REPO_DIR)/scripts/uninstall.sh "$(DIST_DIR)/wedjat-uninstall"
-	@install -m 0644 $(REPO_DIR)/scripts/config.yaml "$(DIST_DIR)/config.yaml"
-	@install -m 0644 $(REPO_DIR)/scripts/wedjatd.service "$(DIST_DIR)/wedjatd.service"
+	@cd $(REPO_DIR) && $(GO_ENV) $(GO) build -trimpath -ldflags='-s -w' -o "$(DIST_DIR)/wedjatd" ./daemon/cmd/wedjatd
+	@install -m 0644 $(DAEMON_DIR)/packaging/config.yaml "$(DIST_DIR)/config.yaml"
+	@install -m 0644 $(DAEMON_DIR)/packaging/wedjatd.service "$(DIST_DIR)/wedjatd.service"
 	@rm -rf "$(DIST_DIR)/ebpf"
 	@install -d -m 0755 "$(DIST_DIR)/ebpf"
-	@install -m 0644 ebpf/build/*.bpf.o "$(DIST_DIR)/ebpf/"
-	@cd "$(DIST_DIR)" && tar -czf "$(RELEASE_NAME).tar.gz" wedjatd wedjat-uninstall config.yaml wedjatd.service ebpf
-	@cd "$(DIST_DIR)" && sha256sum "$(RELEASE_NAME).tar.gz" > "$(RELEASE_NAME).tar.gz.sha256"
-	@echo "Created $(DIST_DIR)/$(RELEASE_NAME).tar.gz"
+	@install -m 0644 $(DAEMON_DIR)/ebpf/build/*.bpf.o "$(DIST_DIR)/ebpf/"
+	@echo "Built: $(DIST_DIR)/wedjatd"
 
 test: build-dev
 	@echo "==> Running Go tests"
-	@$(GO_ENV) $(GO) test ./...
+	@cd $(REPO_DIR) && $(GO_ENV) $(GO) test ./daemon/...
 	@echo ""
 	@echo "==> NVML poller and XID tests"
-	@$(MAKE) -C nvml/test test
+	@$(MAKE) -C $(DAEMON_DIR)/nvml/test test
 	@echo ""
 	@echo "==> eBPF verifier load"
-	@sudo $(MAKE) -C ebpf/proc/test verify
+	@sudo $(MAKE) -C $(DAEMON_DIR)/ebpf/proc/test verify
 
 clean:
-	@echo "==> Removing build artifacts (needs sudo for dev/)"
-	@if [ -d dev ]; then sudo rm -rf dev; fi
-	@rm -rf dist
+	@echo "==> Cleaning daemon build artifacts"
+	@rm -rf $(DEV_BUILD_DIR)/wedjatd-dev
+	@rm -f $(DIST_DIR)/wedjatd $(DIST_DIR)/config.yaml $(DIST_DIR)/wedjatd.service
+	@rm -rf $(DIST_DIR)/ebpf
 	@echo "==> Removing eBPF objects"
-	@rm -rf ebpf/build
+	@rm -rf $(DAEMON_DIR)/ebpf/build
 	@echo "==> Removing test binaries"
-	@rm -rf nvml/test/build ebpf/proc/test/build ebpf/uprobes/test/build ebpf/kprobes/test/build ebpf/gpu/test/build
+	@rm -rf $(DAEMON_DIR)/nvml/test/build $(DAEMON_DIR)/ebpf/proc/test/build $(DAEMON_DIR)/ebpf/uprobes/test/build $(DAEMON_DIR)/ebpf/kprobes/test/build $(DAEMON_DIR)/ebpf/gpu/test/build
 	@echo "==> Removing CUDA fixtures"
-	@-$(MAKE) -C $(REPO_DIR)/kernels_to_trace clean
+	@-$(MAKE) -C $(REPO_DIR)/kernels_to_trace clean 2>/dev/null || true
 	@echo "==> Clean."

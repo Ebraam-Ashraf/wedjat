@@ -367,6 +367,26 @@ func (db *DB) PruneDayFiles(ctx context.Context, keepDays int, now time.Time) (i
 	return removed, nil
 }
 
+// QueryMeta executes a query on the metadata database.
+func (db *DB) QueryMeta(ctx context.Context, query string, dest any) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if err := db.checkOpen(); err != nil {
+		return err
+	}
+	return db.meta.QueryRowContext(ctx, query).Scan(dest)
+}
+
+// GetGPUIdentity fetches GPU identity by ID.
+func (db *DB) GetGPUIdentity(ctx context.Context, gpuID int64) (*GPUIdentity, error) {
+	return db.getGPUIdentity(ctx, gpuID)
+}
+
+// GetProcessIdentity fetches process identity by ID.
+func (db *DB) GetProcessIdentity(ctx context.Context, procID int64) (*ProcessIdentity, error) {
+	return db.getProcessIdentity(ctx, procID)
+}
+
 // PruneMeta removes ended process and incident rows outside their retention
 // windows. Non-positive windows disable pruning for that table.
 func (db *DB) PruneMeta(ctx context.Context, now time.Time, processesDays, incidentsDays int) (int64, int64, error) {

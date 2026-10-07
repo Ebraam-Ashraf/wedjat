@@ -77,7 +77,7 @@ fi
 
 while IFS= read -r member; do
   case "$member" in
-    wedjatd|wedjat|wedjat-uninstall|config.yaml|wedjatd.service) ;;
+    wedjatd|wedjat|config.yaml|wedjatd.service) ;;
     ebpf|ebpf/) ;;
     ebpf/*.bpf.o) ;;
     *) die "unexpected path in release archive: $member" ;;
@@ -85,6 +85,7 @@ while IFS= read -r member; do
 done < <(tar --list --gzip --file "$ARCHIVE")
 tar --extract --gzip --file "$ARCHIVE" --directory "$WORK_DIR" --no-same-owner --no-same-permissions
 [ -f "$WORK_DIR/wedjatd" ] || die "archive does not contain wedjatd"
+[ -f "$WORK_DIR/wedjat" ] || die "archive does not contain wedjat"
 [ -f "$WORK_DIR/config.yaml" ] || die "archive does not contain config.yaml"
 [ -f "$WORK_DIR/wedjatd.service" ] || die "archive does not contain wedjatd.service"
 
@@ -93,12 +94,7 @@ if ! getent group wedjat >/dev/null; then groupadd --system wedjat; fi
 install -d -o root -g wedjat -m 0750 "$CONFIG_DIR"
 install -d -o root -g wedjat -m 2750 "$DATA_DIR"
 install -o root -g root -m 0755 "$WORK_DIR/wedjatd" "$INSTALL_DIR/wedjatd"
-if [ -f "$WORK_DIR/wedjat" ]; then
-  install -o root -g root -m 0755 "$WORK_DIR/wedjat" "$INSTALL_DIR/wedjat"
-fi
-if [ -f "$WORK_DIR/wedjat-uninstall" ]; then
-  install -o root -g root -m 0755 "$WORK_DIR/wedjat-uninstall" "$INSTALL_DIR/wedjat-uninstall"
-fi
+install -o root -g root -m 0755 "$WORK_DIR/wedjat" "$INSTALL_DIR/wedjat"
 if [ ! -e "$CONFIG_DIR/config.yaml" ]; then
   install -o root -g wedjat -m 0640 "$WORK_DIR/config.yaml" "$CONFIG_DIR/config.yaml"
 fi
@@ -127,9 +123,4 @@ else
   systemctl start wedjatd.service
 fi
 printf '\nWedjat daemon installed and running.\n'
-if [ -x "$INSTALL_DIR/wedjat" ]; then
-  printf "Run 'wedjat' to open the dashboard.\n"
-else
-  printf "The TUI is not included in this release yet.\n"
-  printf "The daemon is running; the wedjat CLI will be added with the UI.\n"
-fi
+printf "Run 'sudo wedjat' to open the dashboard.\n"

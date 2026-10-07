@@ -1,188 +1,132 @@
 SHELL := /bin/bash
-.ONESHELL:
-.SHELLFLAGS := -eu -o pipefail -c
 
-ROOT_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+# Define paths
+ROOT_DIR := $(abspath $(CURDIR))
 DAEMON_DIR := $(ROOT_DIR)/daemon
-UI_DIR := $(ROOT_DIR)/ui/web
-FRONTEND_DIR := $(UI_DIR)/frontend
+UI_DIR := $(ROOT_DIR)/ui
 DIST_DIR := $(ROOT_DIR)/dist
 STAGE_DIR := $(DIST_DIR)/.stage
 
 GOARCH ?= amd64
 RELEASE_NAME := wedjat-linux-$(GOARCH)
 ARCHIVE := $(DIST_DIR)/$(RELEASE_NAME).tar.gz
-.DEFAULT_GOAL := build
-NODE_MODULES_VERSION := $(shell node -p 'process.versions.modules' 2>/dev/null || printf unknown)
 
-.PHONY: build release install uninstall clean help ci
+.DEFAULT_GOAL := build
+
+.PHONY: build release install uninstall test clean help dev dev-daemon dev-ui fmt lint check
 
 help:
 	@printf '%s\n' \
 		'Wedjat developer commands' \
-		'  sudo make                 Build the release artifacts' \
-		'  sudo make install         Install an existing local release' \
-		'  sudo make uninstall       Uninstall Wedjat, preserving build files' \
-		'  sudo make clean           Uninstall and remove all build artifacts' \
-		'  sudo make ci              Format, build dev, test daemon, clean' \
-		'  sudo make help            Show this help'
+		'  make release      Build the release artifacts (daemon + ui + cli) into dist/' \
+		'  sudo make install Install an existing local release from dist/' \
+		'  sudo make uninstall Uninstall Wedjat (calls wedjat uninstall)' \
+		'  make test         Run all unit tests across the repo' \
+		'  make clean        Delete build artifacts only (never uninstalls system)' \
+		'  make dev          Run both dev daemon and dev UI together' \
+		'  make dev-daemon   Build and run dev daemon in foreground' \
+		'  make dev-ui       Run dev UI server (with HMR) in foreground' \
+		'  make fmt          Format Go and C source code' \
+		'  make check        Verify required build tools are installed' \
+		'  make help         Show this help'
 
-build:
-	command -v go >/dev/null || { echo 'build requires Go' >&2; exit 1; }
-	command -v npm >/dev/null || { echo 'build requires npm' >&2; exit 1; }
-	command -v node >/dev/null || { echo 'build requires node' >&2; exit 1; }
-	command -v tar >/dev/null || { echo 'build requires tar' >&2; exit 1; }
-	[ "$(NODE_MODULES_VERSION)" != unknown ] || { echo 'could not determine Node.js module ABI' >&2; exit 1; }
+check:
+	@command -v go >/dev/null || { echo 'ERROR: go is required' >&2; exit 1; }
+	@command -v npm >/dev/null || { echo 'ERROR: npm is required' >&2; exit 1; }
+	@command -v node >/dev/null || { echo 'ERROR: node is required' >&2; exit 1; }
+	@command -v tar >/dev/null || { echo 'ERROR: tar is required' >&2; exit 1; }
+	@command -v clang >/dev/null || { echo 'ERROR: clang is required' >&2; exit 1; }
+	@command -v bpftool >/dev/null || { echo 'ERROR: bpftool is required' >&2; exit 1; }
+	@echo "All required tools are installed."
 
-	$(MAKE) -C "$(DAEMON_DIR)" GOARCH=$(GOARCH) release
-	( cd "$(FRONTEND_DIR)" && npm ci && npm run build )
-
-	rm -rf "$(STAGE_DIR)"
-	mkdir -p "$(STAGE_DIR)/ui/frontend"
-	install -m 0755 "$(DAEMON_DIR)/dist/wedjatd" "$(STAGE_DIR)/wedjatd"
-	install -m 0755 "$(DAEMON_DIR)/dist/wedjat-uninstall" "$(STAGE_DIR)/wedjat-uninstall"
-	install -m 0644 "$(DAEMON_DIR)/dist/config.yaml" "$(STAGE_DIR)/config.yaml"
-	install -m 0644 "$(DAEMON_DIR)/dist/wedjatd.service" "$(STAGE_DIR)/wedjatd.service"
-	install -d -m 0755 "$(STAGE_DIR)/ebpf"
-	install -m 0644 "$(DAEMON_DIR)"/ebpf/build/*.bpf.o "$(STAGE_DIR)/ebpf/"
-
-	# Build a production copy without changing the development UI source.
-	sed \
-		-e "s#const baseDir = .*#const socketPath = process.env.WEDJAT_SOCKET_PATH || '/run/wedjat/wedjat.sock';\\nconst dataDir = process.env.WEDJAT_DATA_DIR || '/var/lib/wedjat';#" \
-		-e "/const socketPath = path.join(baseDir, 'run', 'wedjat.sock');/d" \
-		-e "/const dataDir = path.join(baseDir, 'var', 'lib', 'wedjat');/d" \
-		-e "s|path.join(__dirname, 'frontend')|path.join(__dirname, 'frontend', 'dist')|" \
-		"$(UI_DIR)/server.js" > "$(STAGE_DIR)/ui/server.js"
-	cp "$(UI_DIR)/package.json" "$(UI_DIR)/package-lock.json" "$(STAGE_DIR)/ui/"
-	cp -R "$(FRONTEND_DIR)/dist" "$(STAGE_DIR)/ui/frontend/"
-	( cd "$(STAGE_DIR)/ui" && npm ci --omit=dev )
-	( cd "$(STAGE_DIR)/ui" && node -e "require('better-sqlite3')" )
-
-	# Embed the UI runtime behind the top-level wedjat command.
-	cat > "$(STAGE_DIR)/wedjat" <<'LAUNCHER'
-	#!/bin/sh
-	set -eu
-
-	case "$${1:-}" in
-	  uninstall)
-	    [ "$${#}" -eq 1 ] || {
-	      echo 'Usage: wedjat uninstall' >&2
-	      exit 2
-	    }
-	    if [ "$$(id -u)" -eq 0 ]; then
-	      printf 'N\n' | /usr/local/bin/wedjat-uninstall
-	      exit $$?
-	    fi
-	    command -v sudo >/dev/null 2>&1 || {
-	      echo 'wedjat: uninstall requires root; run sudo wedjat uninstall' >&2
-	      exit 1
-	    }
-	    printf 'N\n' | sudo /usr/local/bin/wedjat-uninstall
-	    exit $$?
-	    ;;
-	  --help|-h)
-	    printf '%s\n' 'Usage: wedjat [uninstall]' '  wedjat            Open the dashboard' '  wedjat uninstall  Remove Wedjat'
-	    exit 0
-	    ;;
-	  '')
-	    ;;
-	  *)
-	    echo 'Usage: wedjat [uninstall]' >&2
-	    exit 2
-	    ;;
-	esac
-
-		if [ "$$(id -u)" -ne 0 ] && [ -z "$${WEDJAT_UI_NO_SUDO:-}" ]; then
-			command -v sudo >/dev/null 2>&1 || {
-				echo 'wedjat: dashboard access requires sudo or membership in the wedjat group' >&2
-				exit 1
-			}
-			exec sudo -E env WEDJAT_UI_NO_SUDO=1 "$$0" "$$@"
-		fi
-
-	command -v node >/dev/null 2>&1 || {
-	  echo 'wedjat: node.js is required to open the dashboard' >&2
-	  exit 1
-	}
-	actual_node_abi=$$(node -p 'process.versions.modules')
-	if [ "$$actual_node_abi" != "$(NODE_MODULES_VERSION)" ]; then
-	  echo "wedjat: incompatible Node.js runtime (release ABI $(NODE_MODULES_VERSION), installed ABI $$actual_node_abi)" >&2
-	  echo 'wedjat: install the Node.js major version used to build this release, then run wedjat again' >&2
-	  exit 1
-	fi
-	runtime_dir=$$(mktemp -d "$${TMPDIR:-/tmp}/wedjat.XXXXXX")
-	cleanup() { rm -rf -- "$$runtime_dir"; }
-	trap cleanup EXIT INT TERM
-	payload_line=$$(awk '/^__WEDJAT_PAYLOAD__$$/ { print NR + 1; exit }' "$$0")
-	[ -n "$$payload_line" ] || { echo 'wedjat: embedded UI payload is missing' >&2; exit 1; }
-	tail -n +"$$payload_line" "$$0" | tar -xzf - -C "$$runtime_dir"
-	cd "$$runtime_dir"
-	exec env WEDJAT_PRODUCTION=1 node server.js "$$@"
-	exit 0
-	__WEDJAT_PAYLOAD__
-	LAUNCHER
-	chmod 0755 "$(STAGE_DIR)/wedjat"
-	tar -C "$(STAGE_DIR)/ui" -czf "$(STAGE_DIR)/wedjat-ui.tar.gz" server.js package.json package-lock.json node_modules frontend/dist
-	cat "$(STAGE_DIR)/wedjat-ui.tar.gz" >> "$(STAGE_DIR)/wedjat"
-	rm -f "$(STAGE_DIR)/wedjat-ui.tar.gz"
-
-	rm -f "$(ARCHIVE)" "$(ARCHIVE).sha256"
-	tar -C "$(STAGE_DIR)" -czf "$(ARCHIVE)" wedjat wedjatd wedjat-uninstall config.yaml wedjatd.service ebpf
-	( cd "$(DIST_DIR)" && sha256sum "$(notdir $(ARCHIVE))" > "$(notdir $(ARCHIVE)).sha256" )
-	rm -rf "$(STAGE_DIR)"
-	printf 'Created %s\n' "$(ARCHIVE)"
-	printf 'Created %s\n' "$(ARCHIVE).sha256"
-
-release: build
-
-ci:
-	cleanup() {
-		status=$$?;
-		if [ "$$(id -u)" -eq 0 ]; then
-			$(MAKE) -C "$(DAEMON_DIR)" clean || true;
-		else
-			sudo $(MAKE) -C "$(DAEMON_DIR)" clean || true;
-		fi
-		rm -rf "$(FRONTEND_DIR)/dist" "$(DIST_DIR)";
-		exit $$status;
-	}
-	trap cleanup EXIT
-
-	command -v gofmt >/dev/null || { echo 'ci requires gofmt' >&2; exit 1; }
-	command -v clang-format >/dev/null || { echo 'ci requires clang-format' >&2; exit 1; }
-
-	gofmt -w "$(DAEMON_DIR)"
-	find "$(DAEMON_DIR)/nvml" -type d -name build -prune -o \
+fmt:
+	@command -v gofmt >/dev/null || { echo 'fmt requires gofmt' >&2; exit 1; }
+	@command -v clang-format >/dev/null || { echo 'fmt requires clang-format' >&2; exit 1; }
+	gofmt -w "$(ROOT_DIR)"
+	find "$(DAEMON_DIR)/nvml" "$(DAEMON_DIR)/ebpf" -type d -name build -prune -o \
 		-type f \( -name '*.c' -o -name '*.h' \) -print0 \
 		| xargs -0 -r clang-format -i
+	@echo "Formatting complete."
 
-	$(MAKE) -C "$(DAEMON_DIR)" test
+build: release
+
+release: check
+	@echo "==> Building wedjat release ($(GOARCH))"
+	@rm -rf "$(DIST_DIR)"
+	@mkdir -p "$(DIST_DIR)"
+
+	# 1. Build Daemon
+	@$(MAKE) -C "$(DAEMON_DIR)" build-release GOARCH=$(GOARCH)
+
+	# 2. Build UI (Web + TUI + Server integration)
+	@$(MAKE) -C "$(UI_DIR)/web" build
+	# @$(MAKE) -C "$(UI_DIR)/tui" build # (Uncomment when TUI is ready)
+
+	# 3. Build CLI
+	@echo "==> Building CLI"
+	@CGO_ENABLED=0 GOOS=linux GOARCH=$(GOARCH) go build \
+		-ldflags "-s -w -X main.version=$$(git describe --tags --always --dirty 2>/dev/null || echo dev) \
+		-X main.commit=$$(git rev-parse --short HEAD 2>/dev/null || echo none) \
+		-X main.date=$$(date -u +%Y-%m-%d)" \
+		-o "$(DIST_DIR)/wedjat" "$(ROOT_DIR)/cmd/wedjat"
+
+	# 4. Package Release Archive
+	@echo "==> Creating Release Archive"
+	@rm -rf "$(STAGE_DIR)"
+	@mkdir -p "$(STAGE_DIR)"
+
+	@install -m 0755 "$(DIST_DIR)/wedjatd" "$(STAGE_DIR)/wedjatd"
+	@install -m 0755 "$(DIST_DIR)/wedjat" "$(STAGE_DIR)/wedjat"
+	@install -m 0644 "$(DIST_DIR)/config.yaml" "$(STAGE_DIR)/config.yaml"
+	@install -m 0644 "$(DIST_DIR)/wedjatd.service" "$(STAGE_DIR)/wedjatd.service"
+	@install -d -m 0755 "$(STAGE_DIR)/ebpf"
+	@install -m 0644 "$(DIST_DIR)"/ebpf/*.bpf.o "$(STAGE_DIR)/ebpf/"
+
+	@rm -f "$(ARCHIVE)" "$(ARCHIVE).sha256"
+	@tar -C "$(STAGE_DIR)" -czf "$(ARCHIVE)" wedjat wedjatd config.yaml wedjatd.service ebpf
+	@cd "$(DIST_DIR)" && sha256sum "$(notdir $(ARCHIVE))" > "$(notdir $(ARCHIVE)).sha256"
+	@rm -rf "$(STAGE_DIR)"
+	@echo "Created $(ARCHIVE)"
+	@echo "Created $(ARCHIVE).sha256"
 
 install:
-	[ -f "$(ARCHIVE)" ] || { echo "missing $(ARCHIVE); run sudo make first" >&2; exit 1; }
-	[ -f "$(ARCHIVE).sha256" ] || { echo "missing $(ARCHIVE).sha256; run sudo make first" >&2; exit 1; }
+	@[ -f "$(ARCHIVE)" ] || { echo "ERROR: missing $(ARCHIVE); run make release first" >&2; exit 1; }
+	@[ -f "$(ARCHIVE).sha256" ] || { echo "ERROR: missing $(ARCHIVE).sha256; run make release first" >&2; exit 1; }
 	sudo bash "$(ROOT_DIR)/scripts/install.sh" --local "$(DIST_DIR)"
 
 uninstall:
-	if [ "$${EUID:-$$(id -u)}" -eq 0 ]; then
-		printf 'N\n' | bash "$(ROOT_DIR)/scripts/uninstall.sh"
-	else
-		printf 'N\n' | sudo bash "$(ROOT_DIR)/scripts/uninstall.sh"
+	@if [ "$${EUID:-$$(id -u)}" -eq 0 ]; then \
+		wedjat uninstall; \
+	else \
+		sudo wedjat uninstall; \
 	fi
 
+test:
+	@echo "==> Running Daemon tests"
+	@$(MAKE) -C "$(DAEMON_DIR)" test
+	@echo "==> Running UI Server tests"
+	@cd $(ROOT_DIR) && go test ./ui/server/...
+	@echo "==> Running UI Web tests"
+	@$(MAKE) -C "$(UI_DIR)/web" test
+	@echo "All tests passed."
+
 clean:
-	if [ "$${EUID:-$$(id -u)}" -eq 0 ]; then
-		systemctl disable --now wedjatd 2>/dev/null || true
-		rm -rf /usr/local/bin/wedjat /usr/local/bin/wedjatd /usr/local/bin/wedjat-uninstall
-		rm -rf /usr/local/lib/wedjat /etc/wedjat /var/lib/wedjat
-		rm -f /etc/systemd/system/wedjatd.service
-		systemctl daemon-reload 2>/dev/null || true
-	else
-		sudo systemctl disable --now wedjatd 2>/dev/null || true
-		sudo rm -rf /usr/local/bin/wedjat /usr/local/bin/wedjatd /usr/local/bin/wedjat-uninstall
-		sudo rm -rf /usr/local/lib/wedjat /etc/wedjat /var/lib/wedjat
-		sudo rm -f /etc/systemd/system/wedjatd.service
-		sudo systemctl daemon-reload 2>/dev/null || true
-	fi
-	$(MAKE) -C "$(DAEMON_DIR)" clean
-	rm -rf "$(DIST_DIR)"
+	@echo "==> Cleaning root artifacts"
+	@rm -rf "$(DIST_DIR)"
+	@echo "==> Cleaning daemon artifacts"
+	@$(MAKE) -C "$(DAEMON_DIR)" clean
+	@echo "==> Cleaning web UI artifacts"
+	@$(MAKE) -C "$(UI_DIR)/web" clean
+	@echo "Clean complete."
+
+# Development targets
+dev-daemon:
+	@$(MAKE) -C "$(DAEMON_DIR)" run-dev
+
+dev-ui:
+	@echo "Starting dev UI (builds the web UI, then serves it embedded)..."
+	@$(UI_DIR)/web/scripts/run.sh --dev
+
+dev:
+	@echo "Starting both daemon and UI in development mode..."
+	@$(MAKE) -j2 dev-daemon dev-ui

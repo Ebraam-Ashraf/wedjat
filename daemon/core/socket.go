@@ -2,7 +2,6 @@ package core
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Ebraam-Ashraf/wedjat/daemon/core/source"
+	"github.com/Ebraam-Ashraf/wedjat/internal/wire"
 )
 
 // acceptRetryDelay paces the accept loop after a transient error so a
@@ -34,25 +34,6 @@ type clientQueues struct {
 	other chan []byte
 }
 
-// wireMsg is the JSON envelope sent to every connected client.
-type wireMsg struct {
-	Type      string          `json:"type"`
-	Timestamp int64           `json:"timestamp_unix_nano"`
-	Data      json.RawMessage `json:"data"`
-}
-
-// encodeMsg serialises typeName + tsNano + data into a single JSON line.
-func encodeMsg(typeName string, tsNano int64, data any) ([]byte, error) {
-	raw, err := json.Marshal(data)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(wireMsg{
-		Type:      typeName,
-		Timestamp: tsNano,
-		Data:      raw,
-	})
-}
 
 // SocketOptions configures the listening socket.
 type SocketOptions struct {
@@ -292,9 +273,102 @@ func sendToClient(ch chan []byte, msg []byte) bool {
 	return dropped
 }
 
+// toWireGPUSamples converts source GPUSample slice to wire GPUSample slice.
+func toWireGPUSamples(src []source.GPUSample) []wire.GPUSample {
+	dst := make([]wire.GPUSample, len(src))
+	for i, s := range src {
+		dst[i] = wire.GPUSample{
+			TsNano:         s.TsNano,
+			UUID:           s.UUID,
+			Index:          s.Index,
+			UtilGPU:        s.UtilGPU,
+			UtilMem:        s.UtilMem,
+			MemUsed:        s.MemUsed,
+			TempC:          s.TempC,
+			PowerMW:        s.PowerMW,
+			PowerLimitMW:   s.PowerLimitMW,
+			SMClockMHz:     s.SMClockMHz,
+			MemClockMHz:    s.MemClockMHz,
+			ThrottleReason: s.ThrottleReason,
+			ECCErrors:      s.ECCErrors,
+			ValidFields:    s.ValidFields,
+			Valid:          s.Valid,
+		}
+	}
+	return dst
+}
+
+// toWireProcList converts source ProcList to wire ProcList.
+func toWireProcList(src source.ProcList) wire.ProcList {
+	procs := make([]wire.ProcessSample, len(src.Procs))
+	for i, p := range src.Procs {
+		procs[i] = wire.ProcessSample{
+			PID:       p.PID,
+			GPUUUID:   p.GPUUUID,
+			VRAMBytes: p.VRAMBytes,
+			VRAMValid: p.VRAMValid,
+		}
+	}
+	return wire.ProcList{
+		TsNano:   src.TsNano,
+		Procs:    procs,
+		Complete: src.Complete,
+	}
+}
+
+// toWireXid converts source Xid to wire Xid.
+func toWireXid(src source.Xid) wire.Xid {
+	return wire.Xid{
+		TsNano: src.TsNano,
+		UUID:   src.UUID,
+		Index:  src.Index,
+		Code:   src.Code,
+	}
+}
+
+// toWireAggRows converts source AggRow slice to wire AggRow slice.
+func toWireAggRows(src []source.AggRow) []wire.AggRow {
+	dst := make([]wire.AggRow, len(src))
+	for i, a := range src {
+		dst[i] = wire.AggRow{
+			TsNano:       a.TsNano,
+			Tgid:         a.Tgid,
+			Ordinal:      a.Ordinal,
+			ApiID:        a.ApiID,
+			Count:        a.Count,
+			Bytes:        a.Bytes,
+			LatencySumNs: a.LatencySumNs,
+			LatencyMaxNs: a.LatencyMaxNs,
+			AllocBytes:   a.AllocBytes,
+			FreeBytes:    a.FreeBytes,
+			Errors:       a.Errors,
+			UvmFaults:    a.UvmFaults,
+			UvmEvicts:    a.UvmEvicts,
+		}
+	}
+	return dst
+}
+
+// toWireEvent converts source Event to wire Event.
+func toWireEvent(src source.Event) wire.Event {
+	return wire.Event{
+		TsNano:          src.TsNano,
+		StartBoottimeNs: src.StartBoottimeNs,
+		LatencyNs:       src.LatencyNs,
+		Address:         src.Address,
+		Bytes:           src.Bytes,
+		Tgid:            src.Tgid,
+		Tid:             src.Tid,
+		DeviceOrdinal:   src.DeviceOrdinal,
+		ApiID:           src.ApiID,
+		Flags:           src.Flags,
+		Status:          src.Status,
+	}
+}
+
 // broadcastLoop selects over all five source channels, encodes each message
-// once, and offers it to every connected client's per-client channel.
-// Slow clients lose their oldest messages; they never stall others.
+// once using the wire package, and offers it to every connected client's
+// per-client channel. Slow clients lose their oldest messages; they never stall others.
 func (s *SocketServer) broadcastLoop() {
 	defer s.wg.Done()
 
@@ -314,23 +388,22 @@ func (s *SocketServer) broadcastLoop() {
 			if len(gpus) == 0 {
 				continue
 			}
-			ts := gpus[0].TsNano
-			msgType = "gpu"
-			msg, err = encodeMsg("gpu", ts, gpus)
+			msgType = wire.TypeGPU
+			msg, err = wire.Encode(wire.TypeGPU, gpus[0].TsNano, toWireGPUSamples(gpus))
 
 		case pl, ok := <-s.sock.Procs:
 			if !ok {
 				return
 			}
-			msgType = "procs"
-			msg, err = encodeMsg("procs", pl.TsNano, pl)
+			msgType = wire.TypeProcs
+			msg, err = wire.Encode(wire.TypeProcs, pl.TsNano, toWireProcList(pl))
 
 		case xid, ok := <-s.sock.Xid:
 			if !ok {
 				return
 			}
-			msgType = "xid"
-			msg, err = encodeMsg("xid", xid.TsNano, xid)
+			msgType = wire.TypeXid
+			msg, err = wire.Encode(wire.TypeXid, xid.TsNano, toWireXid(xid))
 
 		case agg, ok := <-s.sock.Agg:
 			if !ok {
@@ -339,16 +412,15 @@ func (s *SocketServer) broadcastLoop() {
 			if len(agg) == 0 {
 				continue
 			}
-			ts := agg[0].TsNano
-			msgType = "agg"
-			msg, err = encodeMsg("agg", ts, agg)
+			msgType = wire.TypeAgg
+			msg, err = wire.Encode(wire.TypeAgg, agg[0].TsNano, toWireAggRows(agg))
 
 		case ev, ok := <-s.sock.Event:
 			if !ok {
 				return
 			}
-			msgType = "event"
-			msg, err = encodeMsg("event", int64(ev.TsNano), ev)
+			msgType = wire.TypeEvent
+			msg, err = wire.Encode(wire.TypeEvent, int64(ev.TsNano), toWireEvent(ev))
 		}
 
 		if err != nil {

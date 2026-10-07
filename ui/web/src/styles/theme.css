@@ -1,0 +1,288 @@
+/**
+ * Wedjat Design Tokens - Theme CSS
+ *
+ * Two themes: Light Green (Modal-inspired) and Desert
+ * Switch themes by setting data-theme="light-green" or data-theme="desert" on <html>
+ *
+ * Token values from Modal GPU Glossary design system (verified in browser devtools)
+ */
+
+:root {
+  /* Default theme (Light Green) */
+  --bg: #2b3731;
+  --panel: #33403a;
+  --border: #4d6a58;
+  --border-strong: #6f9a7e;
+  --text: #d3e3d6;
+  --text-dim: #98ad9d;
+  --active-block: #dff5d3;
+  --active-text: #1c2a20;
+  --chart-line: #a9f59a;
+  --ascii: #a9f59a;
+
+  /* Status colors (verified for contrast) */
+  --ok: #4fb08a;
+  --warn: #e08a3c;
+  --critical: #ee6a55;
+
+  /* Shared */
+  --font-sans: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-mono-fallback: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Spacing scale (base 4px) */
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
+  --space-9: 36px;
+  --space-10: 40px;
+  --space-11: 44px;
+  --space-12: 48px;
+  --space-14: 56px;
+  --space-16: 64px;
+  --space-20: 80px;
+  --space-24: 96px;
+
+  /* Semantic spacing */
+  --space-none: 0;
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+  --space-3xl: 64px;
+  --card-padding: 20px;
+  --card-padding-sm: 16px;
+  --panel-padding: 18px;
+  --page-padding-x: clamp(16px, 4vw, 56px);
+  --page-padding-y: 30px;
+  --page-max-width: 1480px;
+  --page-max-width-narrow: 1152px;
+
+  /* Typography scale */
+  --text-xs: 9px;
+  --text-sm: 10px;
+  --text-base: 11px;
+  --text-md: 12px;
+  --text-lg: 13px;
+  --text-xl: 14px;
+  --text-2xl: 16px;
+  --text-3xl: 19px;
+  --text-4xl: 22px;
+  --text-5xl: 28px;
+  --text-6xl: clamp(3.8rem, 8vw, 4.7rem);
+
+  --leading-tight: 1;
+  --leading-snug: 1.2;
+  --leading-normal: 1.4;
+  --leading-relaxed: 1.55;
+
+  --tracking-tight: -0.035em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.04em;
+  --tracking-wider: 0.08em;
+  --tracking-widest: 0.12em;
+  --tracking-ultra: 0.16em;
+  --tracking-ultra2: 0.18em;
+  --tracking-ultra3: 0.2em;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --weight-extrabold: 800;
+
+  /* Border radius */
+  --radius-none: 0;
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 5px;
+  --radius-xl: 7px;
+  --radius-2xl: 8px;
+  --radius-3xl: 10px;
+  --radius-4xl: 13px;
+  --radius-5xl: 14px;
+  --radius-6xl: 15px;
+  --radius-7xl: 18px;
+  --radius-8xl: 19px;
+  --radius-9xl: 22px;
+  --radius-pill: 999px;
+  --radius-full: 50%;
+
+  /* Shadows */
+  --shadow-none: none;
+  --shadow-xs: inset 0 1px rgba(255,255,255,0.055);
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
+  --shadow-lg: 0 8px 24px rgba(0,0,0,0.5);
+  --shadow-xl: 0 20px 40px -28px rgba(0,0,0,0.85);
+  --shadow-glass: inset 0 1px rgba(255,255,255,0.055), 0 20px 40px -28px rgba(0,0,0,0.85);
+  --shadow-glow-sm: 0 0 7px currentColor;
+  --shadow-glow-md: 0 0 10px currentColor;
+  --shadow-glow-lg: 0 0 12px currentColor;
+  --shadow-glow-xl: 0 0 15px currentColor;
+
+  /* Transitions */
+  --transition-fast: 0.15s ease;
+  --transition-base: 0.2s ease;
+  --transition-slow: 0.3s ease;
+  --transition-slower: 0.4s ease;
+  --transition-pulse: 0.55s ease-out;
+  --transition-width: 0.3s ease;
+  --transition-transform: 0.2s ease;
+  --transition-filter: 0.2s ease;
+  --transition-color: 0.2s ease;
+  --transition-border: 0.2s ease;
+  --transition-background: 0.2s ease;
+  --transition-opacity: 0.2s ease;
+
+  /* Z-index layers */
+  --z-base: 0;
+  --z-dropdown: 10;
+  --z-sticky: 15;
+  --z-status-banner: 19;
+  --z-topbar: 20;
+  --z-modal: 30;
+  --z-popover: 40;
+  --z-tooltip: 50;
+  --z-toast: 60;
+
+  /* Breakpoints */
+  --bp-sm: 600px;
+  --bp-md: 760px;
+  --bp-lg: 820px;
+  --bp-xl: 1024px;
+  --bp-2xl: 1152px;
+  --bp-3xl: 1480px;
+
+  /* Layout constants */
+  --topbar-height: 68px;
+  --topbar-height-mobile: 66px;
+  --subnav-height: 44px;
+  --status-banner-height: 40px;
+  --sidebar-width: 280px;
+  --max-content-width: 1480px;
+  --max-content-width-narrow: 1152px;
+
+  /* Effects */
+  --backdrop-blur: blur(14px) saturate(125%);
+  --backdrop-blur-strong: blur(16px) saturate(125%);
+  --backdrop-blur-subtle: blur(12px);
+  --glass-bg: linear-gradient(155deg, rgba(169, 203, 222, 0.09), rgba(100, 138, 162, 0.025));
+  --glass-border: rgba(186, 215, 231, 0.12);
+  --glass-border-strong: rgba(186, 215, 231, 0.2);
+  --topbar-bg: rgba(8, 19, 29, 0.88);
+  --subnav-bg: rgba(8, 19, 29, 0.76);
+}
+
+/* ============================================================
+   DESERT THEME
+   ============================================================ */
+[data-theme="desert"] {
+  --bg: #1f1a14;
+  --panel: #292219;
+  --border: #6b5636;
+  --border-strong: #9c8050;
+  --text: #f2e7d0;
+  --text-dim: #a8997a;
+  --active-block: #d4af37;
+  --active-text: #1f1a14;
+  --chart-line: #e6cf93;
+  --ascii: #e6cf93;
+
+  /* Status colors (verified for contrast on desert panel) */
+  --ok: #4fb08a;
+  --warn: #e08a3c;
+  --critical: #ee6a55;
+
+  /* Effects adjusted for desert */
+  --glass-bg: linear-gradient(155deg, rgba(212, 175, 55, 0.08), rgba(156, 128, 80, 0.025));
+  --glass-border: rgba(156, 128, 80, 0.12);
+  --glass-border-strong: rgba(156, 128, 80, 0.2);
+  --topbar-bg: rgba(31, 26, 20, 0.88);
+  --subnav-bg: rgba(31, 26, 20, 0.76);
+}
+
+/* ============================================================
+   LIGHT GREEN THEME (explicit, for clarity)
+   ============================================================ */
+[data-theme="light-green"] {
+  --bg: #2b3731;
+  --panel: #33403a;
+  --border: #4d6a58;
+  --border-strong: #6f9a7e;
+  --text: #d3e3d6;
+  --text-dim: #98ad9d;
+  --active-block: #dff5d3;
+  --active-text: #1c2a20;
+  --chart-line: #a9f59a;
+  --ascii: #a9f59a;
+
+  --ok: #4fb08a;
+  --warn: #e08a3c;
+  --critical: #ee6a55;
+
+  --glass-bg: linear-gradient(155deg, rgba(169, 203, 222, 0.09), rgba(100, 138, 162, 0.025));
+  --glass-border: rgba(186, 215, 231, 0.12);
+  --glass-border-strong: rgba(186, 215, 231, 0.2);
+  --topbar-bg: rgba(8, 19, 29, 0.88);
+  --subnav-bg: rgba(8, 19, 29, 0.76);
+}
+
+/* ============================================================
+   REDUCED MOTION
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --transition-fast: 0.01ms;
+    --transition-base: 0.01ms;
+    --transition-slow: 0.01ms;
+    --transition-slower: 0.01ms;
+    --transition-pulse: 0.01ms;
+    --transition-width: 0.01ms;
+    --transition-transform: 0.01ms;
+    --transition-filter: 0.01ms;
+    --transition-color: 0.01ms;
+    --transition-border: 0.01ms;
+    --transition-background: 0.01ms;
+    --transition-opacity: 0.01ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ============================================================
+   HIGH CONTRAST MODE SUPPORT
+   ============================================================ */
+@media (prefers-contrast: high) {
+  :root {
+    --border: var(--border-strong);
+  }
+
+  [data-theme="light-green"] {
+    --border: #8fb89e;
+    --text: #e8f5e9;
+    --text-dim: #b8d4bb;
+  }
+
+  [data-theme="desert"] {
+    --border: #b89d6b;
+    --text: #fff8eb;
+    --text-dim: #c9b896;
+  }
+}
