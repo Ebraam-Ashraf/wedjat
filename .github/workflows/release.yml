@@ -33,7 +33,11 @@ jobs:
         with:
           packages: clang llvm libbpf-dev libnvidia-ml-dev linux-headers-generic linux-tools-common linux-tools-generic pkg-config gcc make
           version: 1.0
-          
+
+      - name: Ensure libnvidia-ml-dev installed
+        run: |
+          dpkg -s libnvidia-ml-dev >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends libnvidia-ml-dev
+
       - name: Install BPFTool
         run: |
           sudo apt-get install -y linux-tools-common linux-tools-generic linux-tools-azure || true
@@ -55,7 +59,7 @@ jobs:
 
       - name: Configure CUDA toolkit path
         run: |
-          NVML_HEADER="$(find /usr/local /usr/include /usr/lib/nvidia-cuda-toolkit -type f -name nvml.h -print -quit 2>/dev/null || true)"
+          NVML_HEADER="$(find /usr -type f -name nvml.h 2>/dev/null | head -1 || true)"
           if [ -z "$NVML_HEADER" ]; then
             echo "nvml.h not found. Searching the filesystem:"
             find / -name 'nvml.h' 2>/dev/null || true
@@ -75,7 +79,7 @@ jobs:
           cd dist
           sha256sum -c wedjat-linux-amd64.tar.gz.sha256
           tar -tzf wedjat-linux-amd64.tar.gz >/dev/null
-          
+
       - name: Upload Release to GitHub
         uses: softprops/action-gh-release@v2
         with:
