@@ -21,15 +21,11 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install build dependencies
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
-            clang llvm clang-format libbpf-dev libnvidia-ml-dev \
-            linux-headers-generic linux-tools-common \
-            linux-tools-generic pkg-config gcc make
+      - name: Cache apt packages
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: clang llvm clang-format libbpf-dev libnvidia-ml-dev linux-headers-generic linux-tools-common linux-tools-generic pkg-config gcc make
+          version: 1.0
 
       - name: Install bpftool command
         run: |
