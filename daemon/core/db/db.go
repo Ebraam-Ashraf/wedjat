@@ -54,6 +54,12 @@ func OpenDB(ctx context.Context, dataDir string) (*DB, error) {
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
 
+	// Create data directory marker so uninstall purge knows it's safe to delete
+	markerPath := filepath.Join(dataDir, ".wedjat-data")
+	if err := os.WriteFile(markerPath, []byte("wedjat-data\nversion=1\n"), 0644); err != nil {
+		return nil, fmt.Errorf("create data marker: %w", err)
+	}
+
 	db := &DB{root: dataDir}
 
 	// Open metadata database

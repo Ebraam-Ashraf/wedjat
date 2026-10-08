@@ -28,7 +28,7 @@ func main() {
 	// Default paths (release paths)
 	const (
 		defaultDataDir    = "/var/lib/wedjat"
-		defaultSocketPath = "/run/wedjatd/socket"
+		defaultSocketPath = "/run/wedjat/wedjat.sock"
 		defaultPort       = 3000
 	)
 
@@ -65,13 +65,13 @@ Defaults are release paths. For development, run:
 	flag.Parse()
 
 	// Handle --version
-	if *versionFlag {
+	if *versionFlag || flag.Arg(0) == "version" {
 		fmt.Printf("wedjat %s (%s) built %s\n", version, commit, date)
 		os.Exit(0)
 	}
 
-	// Handle --uninstall
-	if *uninstallFlag {
+	// Handle uninstall (either via --uninstall or "uninstall" subcommand)
+	if *uninstallFlag || flag.Arg(0) == "uninstall" {
 		runUninstall()
 		return
 	}
@@ -83,7 +83,7 @@ Defaults are release paths. For development, run:
 	}
 
 	// Default to --web if no other mode specified
-	if !*webFlag && !*tuiFlag && !*uninstallFlag {
+	if !*webFlag && !*tuiFlag && !*uninstallFlag && flag.Arg(0) != "uninstall" {
 		*webFlag = true
 	}
 

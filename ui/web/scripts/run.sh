@@ -15,6 +15,11 @@ case "$MODE" in
     cd "$ROOT_DIR"
     GO_BIN="$(command -v go 2>/dev/null || { [ -x /usr/local/go/bin/go ] && echo /usr/local/go/bin/go; } || echo go)"
     mkdir -p dist/dev
+    
+    # Ensure ui/server/httpd/dist exists and has a file so go:embed doesn't fail
+    mkdir -p ui/server/httpd/dist
+    touch ui/server/httpd/dist/.keep
+    
     "$GO_BIN" build -o dist/dev/wedjat ./cmd/wedjat
 
     echo "==> Starting Go API server on port 3000..."
