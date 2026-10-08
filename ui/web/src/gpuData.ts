@@ -11,7 +11,7 @@ export const API_NAMES: Record<number, string> = {
 };
 
 export const THROTTLE_REASONS: Array<[number, string]> = [
-  [0x001, 'GPU idle'], [0x002, 'Application clocks'], [0x004, 'Software power cap'],
+  [0x002, 'Application clocks'], [0x004, 'Software power cap'],
   [0x008, 'Hardware slowdown'], [0x010, 'Sync boost'], [0x020, 'Software thermal slowdown'],
   [0x040, 'Hardware thermal slowdown'], [0x080, 'Hardware power brake'], [0x100, 'Display clocks'],
   [0x200, 'Board limit'], [0x400, 'Reliability policy'],

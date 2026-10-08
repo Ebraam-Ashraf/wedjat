@@ -10,7 +10,7 @@ function EventsList({ store }: { store: TelemetryStoreLike }) {
   return (
     <div className="glass-panel" style={{ padding: 24 }}>
       <h3 style={{ margin: '0 0 16px' }}>Recent Events</h3>
-      <div style={{ maxHeight: 280, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {events.length > 0
           ? events.map((ev: LiveEvent) => (
               <div

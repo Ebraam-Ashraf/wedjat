@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -29,7 +31,8 @@ type AggregateMinute struct {
 }
 
 // GetAggregates returns aggregate data for a time range.
-// If day is empty, uses today's database. Otherwise opens the specific day file.
+// If day is empty, searches all available day files. If the day file doesn't
+// exist, returns empty results.
 func (db *DB) GetAggregates(ctx context.Context, processID, gpuID int64, startTS, endTS int64, day string) ([]AggregateMinute, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -37,20 +40,61 @@ func (db *DB) GetAggregates(ctx context.Context, processID, gpuID int64, startTS
 		return nil, err
 	}
 
-	var database *sql.DB
-	if day == "" || day == time.Now().UTC().Format(dayLayout) {
-		database = db.day
-	} else {
+	// Specific day requested
+	if day != "" {
 		if err := db.rotateDayDBReadOnly(ctx, day); err != nil {
 			return nil, err
 		}
-		database = db.day
+		if db.day == nil {
+			return nil, nil
+		}
+		return db.queryAggregates(ctx, db.day, processID, gpuID, startTS, endTS)
 	}
 
-	if database == nil {
-		return nil, fmt.Errorf("no daily database available")
+	// No specific day: default to last 7 days
+	if startTS == 0 && endTS == 0 {
+		endTS = time.Now().Unix()
+		startTS = endTS - 7*24*60*60
 	}
 
+	entries, err := os.ReadDir(db.root)
+	if err != nil {
+		return nil, fmt.Errorf("read data directory: %w", err)
+	}
+
+	var all []AggregateMinute
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if filepath.Ext(name) != ".db" || name == "meta.db" {
+			continue
+		}
+		dateStr := name[:len(name)-3]
+		t, err := time.Parse(dayLayout, dateStr)
+		if err != nil {
+			continue
+		}
+		dayStart := t.Unix()
+		dayEnd := t.Add(24 * time.Hour).Unix() - 1
+		if dayEnd < startTS || dayStart > endTS {
+			continue
+		}
+		if err := db.rotateDayDBReadOnly(ctx, dateStr); err != nil || db.day == nil {
+			continue
+		}
+		rows, err := db.queryAggregates(ctx, db.day, processID, gpuID, startTS, endTS)
+		if err != nil {
+			continue
+		}
+		all = append(all, rows...)
+	}
+	return all, nil
+}
+
+// queryAggregates runs the agg SELECT on a given database handle.
+func (db *DB) queryAggregates(ctx context.Context, database *sql.DB, processID, gpuID, startTS, endTS int64) ([]AggregateMinute, error) {
 	query := `
 		SELECT ts, proc_id, gpu_id, launches, memcpy_calls, memcpy_bytes,
 		       alloc_calls, alloc_bytes, free_bytes, sync_calls, sync_us_sum,
@@ -150,8 +194,9 @@ func (db *DB) GetAggregateSummary(ctx context.Context, processID, gpuID int64, s
 		database = db.day
 	}
 
+	s := &AggregateSummary{ProcessID: processID, GPUID: gpuID}
 	if database == nil {
-		return nil, fmt.Errorf("no daily database available")
+		return s, nil
 	}
 
 	query := `
@@ -183,9 +228,6 @@ func (db *DB) GetAggregateSummary(ctx context.Context, processID, gpuID int64, s
 	}
 
 	row := database.QueryRowContext(ctx, query, args...)
-	var s AggregateSummary
-	s.ProcessID = processID
-	s.GPUID = gpuID
 
 	var minutes sql.NullInt64
 	if err := row.Scan(
@@ -196,14 +238,14 @@ func (db *DB) GetAggregateSummary(ctx context.Context, processID, gpuID int64, s
 		&s.TotalIoctlCalls, &s.TotalUvmFaults, &s.TotalUvmEvicts, &s.TotalErrors,
 	); err != nil {
 		if err == sql.ErrNoRows {
-			return &s, nil
+			return s, nil
 		}
 		return nil, fmt.Errorf("scan aggregate summary: %w", err)
 	}
 	if minutes.Valid {
 		s.Minutes = minutes.Int64
 	}
-	return &s, nil
+	return s, nil
 }
 
 // TopProcessesByGPU returns processes with the most activity on a GPU.
@@ -225,7 +267,7 @@ func (db *DB) TopProcessesByGPU(ctx context.Context, gpuID int64, startTS, endTS
 	}
 
 	if database == nil {
-		return nil, fmt.Errorf("no daily database available")
+		return nil, nil
 	}
 
 	query := `

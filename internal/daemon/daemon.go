@@ -197,6 +197,15 @@ func Run(paths Paths, readyMsg string, preRun func() error) error {
 	// 12. Start eBPF tracer. Best effort.
 	tracerCfg := sourceebpf.DefaultTracerConfig()
 	tracerCfg.DrainTickMs = cfg.Polling.EbpfDrainTickMs
+	tracerCfg.Enabled = cfg.Tracing.Enabled
+	tracerCfg.RawCapture = cfg.Tracing.RawCapture
+	tracerCfg.SyncStallUs = cfg.Tracing.SyncStallUs
+	tracerCfg.ObjectsDir = cfg.Tracing.ObjectsDir
+	tracerCfg.PinDir = cfg.Tracing.PinDir
+	tracerCfg.LibcudaPath = cfg.Tracing.LibcudaPath
+	tracerCfg.LibcudartPath = cfg.Tracing.LibcudartPath
+	tracerCfg.FixLibcudaPermissions = cfg.Tracing.FixLibcudaPermissions
+	tracerCfg.FixLibcudartPermissions = cfg.Tracing.FixLibcudartPermissions
 	tracerSession, err := sourceebpf.Start(ctx, tracerCfg, dbc, sc)
 	if err != nil {
 		if !sourceebpf.ObjectsExist(tracerCfg.ObjectsDir) {

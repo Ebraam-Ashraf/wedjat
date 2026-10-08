@@ -1,4 +1,4 @@
-/** StatusBadge — small colored pill for status (ok / warn / critical). */
+/** StatusBadge — bracketed terminal tag for status (ok / warn / critical). */
 export type BadgeStatus = 'ok' | 'warn' | 'critical' | 'idle';
 
 export interface StatusBadgeProps {
@@ -9,10 +9,10 @@ export interface StatusBadgeProps {
 }
 
 const STATUS_COLORS: Record<BadgeStatus, string> = {
-  ok:       'var(--ok)',
-  warn:     'var(--warn)',
+  ok: 'var(--ok)',
+  warn: 'var(--warn)',
   critical: 'var(--critical)',
-  idle:     'var(--text-dim)',
+  idle: 'var(--text-dim)',
 };
 
 export default function StatusBadge({ status = 'idle', label, dot = true, className = '' }: StatusBadgeProps) {
@@ -20,24 +20,9 @@ export default function StatusBadge({ status = 'idle', label, dot = true, classN
   return (
     <span
       className={`status-badge status-badge-${status} ${className}`.trim()}
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 6,
-        padding: '2px 8px',
-        borderRadius: 12,
-        fontSize: '0.78rem',
-        fontWeight: 600,
-        color,
-        background: `color-mix(in srgb, ${color} 10%, transparent)`,
-        border: `1px solid color-mix(in srgb, ${color} 33%, transparent)`,
-      }}
+      style={{ color, fontWeight: 700, fontSize: '0.78rem', textTransform: 'uppercase' }}
     >
-      {dot && (
-        <i
-          style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: color }}
-        />
-      )}
+      {dot && <span aria-hidden="true">● </span>}
       {label ?? status}
     </span>
   );

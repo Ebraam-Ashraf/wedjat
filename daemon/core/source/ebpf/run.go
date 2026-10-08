@@ -31,18 +31,24 @@ type TracerConfig struct {
 	PinDir string
 	// LibcudaPath overrides CUDA library discovery.
 	LibcudaPath string
+	// LibcudartPath overrides CUDA runtime library discovery.
+	LibcudartPath string
 	// FixLibcudaPermissions sets the execute bit on the CUDA driver library
 	// when it is missing. eBPF uprobes are matched by inode, so tracing the
 	// CUDA API requires the real library to be readable as executable.
 	FixLibcudaPermissions bool
+	// FixLibcudartPermissions sets the execute bit on the CUDA runtime library
+	// when it is missing.
+	FixLibcudartPermissions bool
 }
 
 // DefaultTracerConfig returns the recommended defaults for production.
 func DefaultTracerConfig() TracerConfig {
 	return TracerConfig{
-		Enabled:               true,
-		FixLibcudaPermissions: true,
-		DrainTickMs:           1000,
+		Enabled:                true,
+		FixLibcudaPermissions:  true,
+		FixLibcudartPermissions: true,
+		DrainTickMs:            1000,
 	}
 }
 
@@ -86,6 +92,16 @@ func Start(ctx context.Context, cfg TracerConfig, db, sock source.Chans) (*Sessi
 		}
 	}
 
+	libcudart := cfg.LibcudartPath
+	if libcudart == "" {
+		found, err := findLibcudart()
+		if err != nil {
+			log.Printf("eBPF: libcudart not found: %v", err)
+		} else {
+			libcudart = found
+		}
+	}
+
 	objectsDir, err := resolveObjectsDir(cfg.ObjectsDir)
 	if err != nil {
 		// Missing objects is best-effort: log and return nil
@@ -104,7 +120,13 @@ func Start(ctx context.Context, cfg TracerConfig, db, sock source.Chans) (*Sessi
 		}
 	}
 
-	tracer, err := LoadTracer(objectsDir, pinDir, libcuda)
+	if cfg.FixLibcudartPermissions && libcudart != "" {
+		if err := ensureLibcudaExecutable(libcudart); err != nil {
+			log.Printf("eBPF: could not make %s executable: %v", libcudart, err)
+		}
+	}
+
+	tracer, err := LoadTracer(objectsDir, pinDir, libcuda, libcudart)
 	if err != nil {
 		return nil, err
 	}

@@ -6,8 +6,11 @@ import { gpuMetaFor, throttleNames } from '../gpuData';
 import RealtimeChart from '../components/RealtimeChart';
 import Freshness, { useFreshness } from '../components/Freshness';
 import AsciiLoader from '../components/AsciiLoader';
+import AnkhAnimation from '../components/AnkhAnimation';
 import PyramidAnimation from '../components/PyramidAnimation';
 import AsciiBox, { AsciiRule } from '../components/ui/AsciiBox';
+import GpuTermCard from '../components/GpuTermCard';
+import { AsciiMeter } from '../components/term';
 import type { TelemetryStore } from '../store/telemetryStore';
 import type { GpuInfo, GpuSample, LiveProcess, ProcessRow, Incident, AggregateRow } from '../types';
 
@@ -125,12 +128,8 @@ function ProcessPanel({
                 </b>
               </div>
               {/* VRAM bar */}
-              <div className="util-track mt-2" style={{ height: 5 }}>
-                <span
-                  style={{
-                    width: `${Math.min(100, Math.max(0, (number(row.currentBytes) / total) * 100))}%`,
-                  }}
-                />
+              <div className="mt-2 text-xs overflow-hidden whitespace-nowrap">
+                <AsciiMeter pct={(number(row.currentBytes) / total) * 100} width={32} warn={80} crit={95} />
               </div>
               {/* Row foot */}
               <div className="flex justify-between mt-2 text-text-dim text-xs">
@@ -154,6 +153,12 @@ function ProcessPanel({
   );
 }
 
+const INCIDENT_TYPES = [
+  { type: 'sync_stall', trigger: 'Sync latency ≥ 250 ms', cause: 'GPU oversubscribed, thermal throttle, heavy compute' },
+  { type: 'sync_hang',  trigger: 'Driver FlagHungSync set',  cause: 'GPU hang (driver/kernel bug, HW fault)' },
+  { type: 'xid',        trigger: 'NVIDIA Xid interrupt',     cause: 'ECC error, thermal, power, NVLink failure' },
+];
+
 function IncidentPanel({
   incidents,
   error,
@@ -167,22 +172,57 @@ function IncidentPanel({
     (item) => !gpu?.name || !item.gpu_name || item.gpu_name === gpu.name,
   );
   const rows = matching.slice(0, 3);
+  const [showHelp, setShowHelp] = useState(false);
 
   return (
     <AsciiBox
       title="INCIDENTS"
       subtitle={
-        <Link
-          to="/events"
-          className="text-text-dim hover:text-chart-line transition-colors text-xs font-mono"
-        >
-          {rows.length} recent
-        </Link>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Link
+            to="/events"
+            className="text-text-dim hover:text-chart-line transition-colors text-xs font-mono"
+          >
+            {rows.length} recent
+          </Link>
+          <button
+            type="button"
+            onClick={(e) => { e.preventDefault(); setShowHelp(!showHelp); }}
+            style={{
+              padding: '2px 6px',
+              fontSize: '0.65rem',
+              background: 'transparent',
+              border: '1px solid var(--border)',
+              borderRadius: 4,
+              color: 'var(--text-dim)',
+              cursor: 'pointer',
+              lineHeight: 1,
+            }}
+            title="Incident type legend"
+          >
+            ?
+          </button>
+        </div>
       }
       tone={rows.length > 0 ? 'warn' : 'default'}
       padding="tight"
       aria-label="Recent incidents"
     >
+      {showHelp && (
+        <div style={{ marginBottom: 8, padding: 8, background: 'rgba(0,0,0,0.2)', borderRadius: 6, fontSize: '0.65rem', border: '1px solid var(--border)' }}>
+          <strong style={{ display: 'block', marginBottom: 4 }}>Incident types:</strong>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <tbody>
+              {INCIDENT_TYPES.map((row) => (
+                <tr key={row.type}>
+                  <td style={{ padding: '2px 6px', fontFamily: 'monospace', color: 'var(--chart-line)', whiteSpace: 'nowrap' }}>{row.type}</td>
+                  <td style={{ padding: '2px 6px', color: 'var(--text-dim)', fontSize: '0.6rem' }}>{row.trigger}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
       <div className="flex flex-col gap-2 py-2">
         {rows.length ? (
           rows.map((item, i) => (
@@ -215,6 +255,30 @@ function IncidentPanel({
           </div>
         )}
       </div>
+    </AsciiBox>
+  );
+}
+
+function GpuMonitorCard({
+  sample,
+  meta,
+  children,
+}: {
+  sample: GpuSample;
+  meta: GpuInfo | null;
+  children: (freshness: ReturnType<typeof useFreshness>) => ReactNode;
+}) {
+  const freshness = useFreshness(sample.lastSampleAt, sample.intervalMs);
+
+  return (
+    <AsciiBox
+      title="GPU MONITOR"
+      subtitle={`GPU ${sample.index}`}
+      padding="tight"
+      aria-label={`GPU ${sample.index} monitor`}
+      className="min-w-0"
+    >
+      {children(freshness)}
     </AsciiBox>
   );
 }
@@ -262,67 +326,13 @@ export default function Dashboard({
     ? samples.filter((s) => s.uuid === selectedGpu)
     : samples;
 
-  const [activeUuid, setActiveUuid] = useState('');
-  useEffect(() => {
-    if (!activeUuid && visibleSamples.length) {
-      setActiveUuid(visibleSamples[0].uuid);
-    } else if (
-      activeUuid &&
-      !visibleSamples.some((s) => s.uuid === activeUuid) &&
-      visibleSamples.length
-    ) {
-      setActiveUuid(visibleSamples[0].uuid);
-    }
-  }, [visibleSamples, activeUuid]);
-
-  const sample      = visibleSamples.find((s) => s.uuid === activeUuid) || visibleSamples[0];
-  const meta        = gpuMetaFor(sample, devices) as GpuInfo | null;
-  const freshness   = useFreshness(sample?.lastSampleAt, sample?.intervalMs);
   const procRows    = (processApi.data || []) as ProcessRow[];
-
-  const total       = number(meta?.vram_total_bytes);
-
-  const aggregates  = ((aggregateApi.data || []) as AggregateRow[]).filter(
-    (r) => !meta?.name || r.gpu_name === meta.name,
-  );
-  const stats = aggregates.reduce(
-    (acc, r) => ({
-      kernels: acc.kernels + number(r.launches),
-      memcpy:  acc.memcpy  + number(r.memcpy_bytes),
-      faults:  acc.faults  + number(r.uvm_faults),
-      sync:    acc.sync    + number(r.sync_us_sum),
-    }),
-    { kernels: 0, memcpy: 0, faults: 0, sync: 0 },
-  );
-
-  const throttle = sample?.throttle == null ? [] : throttleNames(sample.throttle);
+  const sideMeta     = gpuMetaFor(visibleSamples[0], devices) as GpuInfo | null;
 
   return (
     <div className="page-stack">
-      {/* GPU tab bar */}
-      <div className="flex items-center justify-between min-h-8">
-        <div className="flex gap-2" role="tablist" aria-label="Select GPU">
-          {visibleSamples.map((gpu) => (
-            <button
-              key={gpu.uuid || gpu.index}
-              type="button"
-              role="tab"
-              aria-selected={gpu.uuid === sample?.uuid}
-              onClick={() => setActiveUuid(gpu.uuid)}
-              className={`px-4 py-2 border rounded-pill font-mono text-xs cursor-pointer transition-colors ${
-                gpu.uuid === sample?.uuid
-                  ? 'text-chart-line border-chart-line bg-[color-mix(in_srgb,var(--chart-line)_10%,transparent)]'
-                  : 'text-text-dim border-border bg-[rgba(255,255,255,0.045)]'
-              }`}
-            >
-              GPU {gpu.index}
-            </button>
-          ))}
-        </div>
-      </div>
-
       {/* Empty / disconnected state */}
-      {!sample ? (
+      {!visibleSamples.length ? (
         <section className="glass-panel empty-state rounded-xl p-8">
           <AsciiLoader label={disconnected ? 'Daemon disconnected' : 'Collecting GPU telemetry'} />
           <p className="mt-4 text-text-dim text-sm max-w-md text-center leading-relaxed">
@@ -333,16 +343,43 @@ export default function Dashboard({
       ) : (
         <div
           className="grid gap-5"
-          style={{ gridTemplateColumns: 'minmax(0, 1.4fr) minmax(300px, 1fr)' }}
+          style={{ gridTemplateColumns: 'auto minmax(0, 1.4fr) minmax(300px, 1fr)' }}
         >
+          {/* ── Ankh column (left) ──────────────────────────────── */}
+          <div
+            className="flex flex-col justify-center items-center"
+            aria-hidden="true"
+          >
+            <div className="opacity-60 hover:opacity-90 transition-opacity sticky top-8">
+              <AnkhAnimation speed={1.2} w={56} h={40} color />
+            </div>
+          </div>
+
           {/* ── Main column ─────────────────────────────────────── */}
+          <div className="flex flex-col gap-5 min-w-0">
+          {visibleSamples.map((sample) => {
+            const meta = gpuMetaFor(sample, devices) as GpuInfo | null;
+            const total = number(meta?.vram_total_bytes);
+            const aggregates = ((aggregateApi.data || []) as AggregateRow[]).filter(
+              (r) => !meta?.name || r.gpu_name === meta.name,
+            );
+            const stats = aggregates.reduce(
+              (acc, r) => ({
+                kernels: acc.kernels + number(r.launches),
+                memcpy: acc.memcpy + number(r.memcpy_bytes),
+                faults: acc.faults + number(r.uvm_faults),
+                sync: acc.sync + number(r.sync_us_sum),
+              }),
+              { kernels: 0, memcpy: 0, faults: 0, sync: 0 },
+            );
+            const throttle = sample.throttle == null ? [] : throttleNames(sample.throttle);
+
+            return (
+              <GpuMonitorCard key={sample.uuid || sample.index} sample={sample} meta={meta}>
+                {(freshness) => (
           <div className="flex flex-col gap-4 min-w-0">
-            {/* Hero GPU Card - Terminal HUD Style */}
-            <div
-              className={`relative border border-[color-mix(in_srgb,var(--chart-line)_30%,transparent)] p-5 font-mono bg-panel ${
-                freshness.stale ? 'opacity-80 border-warn' : ''
-              }`}
-            >
+            <GpuTermCard sample={sample} meta={meta} stale={freshness.stale} />
+            <div className="hidden">
               {/* Corner Brackets */}
               <span className={`absolute -top-[1px] -left-[1px] w-4 h-4 border-t-2 border-l-2 pointer-events-none ${freshness.stale ? 'border-warn' : 'border-chart-line'}`} />
               <span className={`absolute -top-[1px] -right-[1px] w-4 h-4 border-t-2 border-r-2 pointer-events-none ${freshness.stale ? 'border-warn' : 'border-chart-line'}`} />
@@ -492,12 +529,8 @@ export default function Dashboard({
             </div>
 
             {/* CUDA activity stats row */}
-            <AsciiBox
-              title="CUDA ACTIVITY"
-              variant="single"
-              padding="tight"
-              aria-label="CUDA activity statistics"
-            >
+            <section className="gpu-subsection" aria-label="CUDA activity statistics">
+              <div className="gpu-subsection-title">CUDA ACTIVITY</div>
               <div className="grid grid-cols-4 gap-2 py-2">
                 <Metric
                   label="kernels"
@@ -524,16 +557,14 @@ export default function Dashboard({
                   tone="tone-violet"
                 />
               </div>
-            </AsciiBox>
+            </section>
 
             {/* History chart */}
-            <AsciiBox
-              title="HISTORY"
-              subtitle="last 1 minute"
-              variant="single"
-              padding="tight"
-              aria-label="Recent GPU history"
-            >
+            <section className="gpu-subsection" aria-label="Recent GPU history">
+              <div className="gpu-subsection-heading">
+                <span className="gpu-subsection-title">HISTORY</span>
+                <span className="text-text-dim text-xs">last 1 minute</span>
+              </div>
               <div className="glass-panel rounded-8xl p-3 my-2">
                 {live ? (
                   <RealtimeChart
@@ -554,8 +585,13 @@ export default function Dashboard({
                   </div>
                 )}
               </div>
-            </AsciiBox>
+            </section>
           </div>
+                )}
+              </GpuMonitorCard>
+            );
+          })}
+          </div>{/* end main column */}
 
           {/* ── Side column ──────────────────────────────────────── */}
           <aside className="flex flex-col gap-4 min-w-0">
@@ -568,13 +604,13 @@ export default function Dashboard({
             <ProcessPanel
               rows={procRows}
               liveRows={liveProcesses}
-              gpu={meta}
+              gpu={sideMeta}
             />
 
             <IncidentPanel
               incidents={incidentApi.data as Incident[] | null}
               error={incidentApi.error}
-              gpu={meta}
+              gpu={sideMeta}
             />
 
             {aggregateApi.error && (

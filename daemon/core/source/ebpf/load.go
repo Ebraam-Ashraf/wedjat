@@ -48,13 +48,22 @@ var libcudaCandidates = []string{
 	"/usr/lib/libcuda.so.1",
 }
 
+// libcudartCandidates are the usual locations of the CUDA runtime library.
+var libcudartCandidates = []string{
+	"/usr/lib/x86_64-linux-gnu/libcudart.so.13",
+	"/usr/lib64/libcudart.so.13",
+	"/usr/lib/libcudart.so.13",
+	"/usr/local/cuda/lib64/libcudart.so",
+	"/usr/local/cuda/lib/libcudart.so",
+}
+
 // LoadTracer loads every BPF object into one collection, pins the state maps
 // and attaches the programs it can.
 //
 // Attachment is best effort per program. NVIDIA kernel symbols and CUDA entry
 // points change between driver versions, so a probe that does not apply here
 // must not stop the probes that do. Callers are expected to log Failed.
-func LoadTracer(objectsDir, pinDir, libcudaPath string) (*Tracer, error) {
+func LoadTracer(objectsDir, pinDir, libcudaPath, libcudartPath string) (*Tracer, error) {
 	merged := &ebpf.CollectionSpec{Maps: map[string]*ebpf.MapSpec{}}
 	sections := map[string]string{}
 
@@ -135,7 +144,7 @@ func LoadTracer(objectsDir, pinDir, libcudaPath string) (*Tracer, error) {
 	}
 
 	t.pinState(pinDir)
-	t.attachAll(libcudaPath)
+	t.attachAll(libcudaPath, libcudartPath)
 
 	if len(t.Attached) == 0 {
 		t.Close()
@@ -311,4 +320,14 @@ func findLibcuda() (string, error) {
 		}
 	}
 	return "", errors.New("libcuda.so.1 not found; is the NVIDIA driver installed?")
+}
+
+// findLibcudart returns the first CUDA runtime library that exists.
+func findLibcudart() (string, error) {
+	for _, path := range libcudartCandidates {
+		if _, err := os.Stat(path); err == nil {
+			return path, nil
+		}
+	}
+	return "", errors.New("libcudart.so not found; is the CUDA toolkit installed?")
 }

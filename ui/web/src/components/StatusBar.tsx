@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom';
-import Freshness, { useFreshness } from './Freshness';
+import { useFreshness } from './Freshness';
 import { useStoreValue } from '../hooks/useStoreValue';
 import type { TelemetryStore } from '../store/telemetryStore';
 import type { StatusResponse, GpuInfo } from '../types';
@@ -113,20 +113,6 @@ export default function StatusBar({
             </label>
           )}
 
-          {/* Live / pause toggle */}
-          {onToggleLive && (
-            <button
-              className={`live-toggle${liveActive ? ' is-live' : ''}`}
-              type="button"
-              onClick={onToggleLive}
-              aria-pressed={liveActive}
-              disabled={!socketOnline}
-            >
-              <i />
-              {liveLabel}
-            </button>
-          )}
-
           {/* Theme toggle */}
           <button
             className="theme-toggle"
@@ -138,22 +124,6 @@ export default function StatusBar({
             {theme === 'desert' ? '☀' : '☽'}
           </button>
 
-          {/* Heartbeat label */}
-          <span className="heartbeat">{heartbeatLabel}</span>
-
-          {/* GPU freshness dot */}
-          <Freshness
-            lastSampleAt={gpu.lastGpuAt}
-            intervalMs={gpu.intervalMs}
-            sequence={gpu.sequence}
-            compact
-          />
-
-          {/* Connection pill */}
-          <span className={`connection-pill${socketOnline ? ' is-online' : ' is-offline'}`}>
-            <i />
-            {socketOnline ? 'Connected' : 'Disconnected'}
-          </span>
         </div>
       </header>
 

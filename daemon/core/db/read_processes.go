@@ -17,7 +17,8 @@ type ProcessWithVRAM struct {
 	VRAM       []ProcessVRAM `json:"vram,omitempty"`
 }
 
-// ListProcesses returns all processes for a boot, optionally filtered.
+// ListProcesses returns processes, optionally including ended ones, newest first.
+// bootID is no longer required – passing an empty string returns all processes.
 func (db *DB) ListProcesses(ctx context.Context, bootID string, includeEnded bool, limit, offset int) ([]ProcessWithVRAM, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -29,9 +30,14 @@ func (db *DB) ListProcesses(ctx context.Context, bootID string, includeEnded boo
 		SELECT proc_id, boot_id, tgid, start_ticks, command, first_seen_ts,
 		       end_ts, end_reason, exit_code, term_signal
 		FROM procs
-		WHERE boot_id = ?
+		WHERE 1=1
 	`
-	args := []any{bootID}
+	args := []any{}
+
+	if bootID != "" {
+		query += ` AND boot_id = ?`
+		args = append(args, bootID)
+	}
 	if !includeEnded {
 		query += ` AND end_ts IS NULL`
 	}
@@ -235,7 +241,7 @@ func (db *DB) RunningProcesses(ctx context.Context, bootID string) ([]ProcessWit
 	return db.ListProcesses(ctx, bootID, false, 0, 0)
 }
 
-// ProcessCount returns the count of processes for a boot.
+// ProcessCount returns the count of processes, optionally filtered by bootID.
 func (db *DB) ProcessCount(ctx context.Context, bootID string, includeEnded bool) (int64, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -243,8 +249,12 @@ func (db *DB) ProcessCount(ctx context.Context, bootID string, includeEnded bool
 		return 0, err
 	}
 
-	query := `SELECT COUNT(*) FROM procs WHERE boot_id = ?`
-	args := []any{bootID}
+	query := `SELECT COUNT(*) FROM procs WHERE 1=1`
+	args := []any{}
+	if bootID != "" {
+		query += ` AND boot_id = ?`
+		args = append(args, bootID)
+	}
 	if !includeEnded {
 		query += ` AND end_ts IS NULL`
 	}

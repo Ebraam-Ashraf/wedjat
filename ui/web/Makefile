@@ -18,12 +18,12 @@ help:
 
 dev:
 	@echo "==> Starting Vite development server"
-	@npm ci
+	@npm ci --prefix "$(WEB_DIR)"
 	@npm run dev
 
 build:
 	@echo "==> Building Web UI for production"
-	@npm ci
+	@npm ci --prefix "$(WEB_DIR)"
 	@npm run build
 	@echo "Built UI output to: $(SERVER_DIST_DIR)"
 

@@ -25,6 +25,7 @@ help:
 	@echo "  make clean         Delete build artifacts"
 
 bpf:
+	@sudo rm -rf $(DAEMON_DIR)/ebpf/build
 	@cd $(REPO_DIR) && ./daemon/ebpf/build.sh
 
 kernels:
@@ -65,11 +66,11 @@ test: build-dev
 
 clean:
 	@echo "==> Cleaning daemon build artifacts"
-	@rm -rf $(DEV_BUILD_DIR)/wedjatd-dev
+	@sudo rm -rf $(DEV_BUILD_DIR)/wedjatd-dev
 	@rm -f $(DIST_DIR)/wedjatd $(DIST_DIR)/config.yaml $(DIST_DIR)/wedjatd.service
 	@rm -rf $(DIST_DIR)/ebpf
 	@echo "==> Removing eBPF objects"
-	@rm -rf $(DAEMON_DIR)/ebpf/build
+	@sudo rm -rf $(DAEMON_DIR)/ebpf/build
 	@echo "==> Removing test binaries"
 	@rm -rf $(DAEMON_DIR)/nvml/test/build $(DAEMON_DIR)/ebpf/proc/test/build $(DAEMON_DIR)/ebpf/uprobes/test/build $(DAEMON_DIR)/ebpf/kprobes/test/build $(DAEMON_DIR)/ebpf/gpu/test/build
 	@echo "==> Removing CUDA fixtures"

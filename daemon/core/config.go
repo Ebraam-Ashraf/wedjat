@@ -12,6 +12,7 @@ import (
 type Config struct {
 	Storage StorageConfig `yaml:"storage"`
 	Polling PollingConfig `yaml:"polling"`
+	Tracing TracingConfig `yaml:"tracing"`
 }
 
 // StorageConfig controls persistence: what to keep and for how long.
@@ -38,6 +39,34 @@ type PollingConfig struct {
 	EbpfDrainTickMs int `yaml:"ebpf_drain_tick_ms"`
 }
 
+// TracingConfig controls eBPF tracing behavior.
+type TracingConfig struct {
+	// Enabled turns eBPF tracing off entirely. NVML polling is unaffected.
+	Enabled bool `yaml:"enabled"`
+	// RawCapture sends every event to userspace instead of only counting the
+	// hot paths. This makes process exit and sync latency exact, at the cost
+	// of noticeably more ring buffer traffic.
+	RawCapture bool `yaml:"raw_capture"`
+	// SyncStallUs is how long a single CUDA sync may take before it is
+	// recorded as a stall. Zero uses the built-in default of 250000 (250 ms).
+	SyncStallUs uint32 `yaml:"sync_stall_us"`
+	// ObjectsDir holds the compiled BPF objects. Empty means the default.
+	ObjectsDir string `yaml:"objects_dir"`
+	// PinDir holds the pinned state maps. Empty means the default.
+	PinDir string `yaml:"pin_dir"`
+	// LibcudaPath overrides CUDA library discovery.
+	LibcudaPath string `yaml:"libcuda_path"`
+	// LibcudartPath overrides CUDA runtime library discovery.
+	LibcudartPath string `yaml:"libcudart_path"`
+	// FixLibcudaPermissions sets the execute bit on the CUDA driver library
+	// when it is missing. eBPF uprobes are matched by inode, so tracing the
+	// CUDA API requires the real library to be readable as executable.
+	FixLibcudaPermissions bool `yaml:"fix_libcuda_permissions"`
+	// FixLibcudartPermissions sets the execute bit on the CUDA runtime library
+	// when it is missing.
+	FixLibcudartPermissions bool `yaml:"fix_libcudart_permissions"`
+}
+
 // DefaultConfig returns sensible defaults.
 func DefaultConfig() Config {
 	return Config{
@@ -50,6 +79,11 @@ func DefaultConfig() Config {
 			NvmlDbTickMs:     2000,
 			NvmlSocketTickMs: 500,
 			EbpfDrainTickMs:  1000,
+		},
+		Tracing: TracingConfig{
+			Enabled:                true,
+			FixLibcudaPermissions:  true,
+			FixLibcudartPermissions: true,
 		},
 	}
 }

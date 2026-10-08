@@ -382,6 +382,39 @@ func (db *DB) GetGPUIdentity(ctx context.Context, gpuID int64) (*GPUIdentity, er
 	return db.getGPUIdentity(ctx, gpuID)
 }
 
+// GetGPUDBIDByUUID returns the internal database PK for a GPU identified by UUID.
+// Returns 0 if not found.
+func (db *DB) GetGPUDBIDByUUID(ctx context.Context, uuid string) (int64, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if err := db.checkOpen(); err != nil {
+		return 0, err
+	}
+	var id int64
+	err := db.meta.QueryRowContext(ctx, `SELECT gpu_id FROM gpus WHERE uuid = ?`, uuid).Scan(&id)
+	if err != nil {
+		return 0, nil // not found is not fatal
+	}
+	return id, nil
+}
+
+// GetGPUDBIDForHistory looks up the internal DB PK for a GPU by UUID for use
+// in history/aggregates queries.  Unlike GetGPUDBIDByUUID it returns an error
+// when the GPU is not registered so the HTTP handler can return 404.
+func (db *DB) GetGPUDBIDForHistory(ctx context.Context, uuid string) (int64, error) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if err := db.checkOpen(); err != nil {
+		return 0, err
+	}
+	var id int64
+	err := db.meta.QueryRowContext(ctx, `SELECT gpu_id FROM gpus WHERE uuid = ?`, uuid).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("gpu %q not found", uuid)
+	}
+	return id, nil
+}
+
 // GetProcessIdentity fetches process identity by ID.
 func (db *DB) GetProcessIdentity(ctx context.Context, procID int64) (*ProcessIdentity, error) {
 	return db.getProcessIdentity(ctx, procID)

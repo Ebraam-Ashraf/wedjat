@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -18,6 +20,34 @@ import (
 const maxRetryRows = 100_000
 
 var unattributed atomic.Uint64
+
+// bootTimeUnix caches the system boot time in epoch seconds.
+// Filled lazily on first use.
+var bootTimeUnix int64
+
+func getBootTimeUnix() int64 {
+	if bootTimeUnix != 0 {
+		return bootTimeUnix
+	}
+	f, err := os.Open("/proc/stat")
+	if err != nil {
+		return time.Now().Unix() // fallback
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "btime ") {
+			var btime int64
+			if _, err := fmt.Sscanf(line, "btime %d", &btime); err == nil {
+				bootTimeUnix = btime
+				return bootTimeUnix
+			}
+		}
+	}
+	return time.Now().Unix() // fallback
+}
 
 type processCache struct {
 	key        procKey
@@ -224,6 +254,46 @@ func (l *Layer) gpuID(uuid string) int64 {
 	return -1
 }
 
+// resolveGPUID resolves a CUDA-visible device ordinal to the GPU database ID
+// by looking up the process's CUDA ordinal mapping.
+func (l *Layer) resolveGPUID(tgid uint32, ordinal uint32) *int64 {
+	if ordinal == 0xffffffff { // WEDJAT_UNKNOWN_DEVICE
+		return nil
+	}
+	pc, ok := l.processCache[tgid]
+	if !ok || pc.ordinals == nil {
+		return nil
+	}
+	if id, ok := pc.ordinals[ordinal]; ok {
+		return &id
+	}
+	return nil
+}
+
+// getProcID returns the database process ID for a TGID, looking up by boottime.
+func (l *Layer) getProcID(tgid uint32, startBoottimeNs uint64) *int64 {
+	if startBoottimeNs == 0 {
+		return nil
+	}
+	pc, ok := l.processCache[tgid]
+	if !ok {
+		return nil
+	}
+	if !startTicksMatchBoottime(startBoottimeNs, pc.key.StartTicks) {
+		return nil
+	}
+	// Look up process ID from database using the procKey
+	ctx := context.Background()
+	var procID int64
+	err := l.database.meta.QueryRowContext(ctx,
+		`SELECT proc_id FROM procs WHERE boot_id=? AND tgid=? AND start_ticks=?`,
+		l.bootID, pc.key.Tgid, pc.key.StartTicks).Scan(&procID)
+	if err != nil {
+		return nil
+	}
+	return &procID
+}
+
 func (l *Layer) registerProcess(pid uint32, seenAt int64) (processCache, bool) {
 	start, command, err := l.readIdentity(uint(pid))
 	if err != nil || start <= 0 {
@@ -383,10 +453,10 @@ func (l *Layer) handleEvent(event source.Event) {
 		l.processCache[event.Tgid] = pc
 	case 8:
 		if event.Flags&source.FlagHungSync != 0 {
-			l.batch.Incidents = append(l.batch.Incidents, *buildSyncHangIncident(event))
+			l.batch.Incidents = append(l.batch.Incidents, *l.buildSyncHangIncident(event))
 		}
 		if event.LatencyNs >= 250_000_000 {
-			l.batch.Incidents = append(l.batch.Incidents, *buildSyncStallIncident(event))
+			l.batch.Incidents = append(l.batch.Incidents, *l.buildSyncStallIncident(event))
 		}
 	}
 }
@@ -641,11 +711,34 @@ func (l *Layer) WriteBatch(ctx context.Context, batch Batch) error {
 
 func (l *Layer) Unattributed() uint64 { return unattributed.Load() }
 
-func buildSyncStallIncident(event source.Event) *Incident {
-	return &Incident{Type: IncidentSyncStall, FirstTS: int64(event.TsNano / 1e9), LastTS: int64(event.TsNano / 1e9), DedupeKey: fmt.Sprintf("sync_stall_%d_%d", event.Tgid, event.DeviceOrdinal), Summary: fmt.Sprintf("Sync stall: %dms", event.LatencyNs/1e6), Detail: fmt.Sprintf("Process %d sync took %d nanoseconds", event.Tgid, event.LatencyNs)}
+func (l *Layer) buildSyncStallIncident(event source.Event) *Incident {
+	epochSec := getBootTimeUnix() + int64(event.TsNano/1e9)
+	gpuID := l.resolveGPUID(event.Tgid, event.DeviceOrdinal)
+	return &Incident{
+		Type:      IncidentSyncStall,
+		FirstTS:   epochSec,
+		LastTS:    epochSec,
+		DedupeKey: fmt.Sprintf("sync_stall_%d_%d", event.Tgid, event.DeviceOrdinal),
+		Summary:   fmt.Sprintf("Sync stall: %dms", event.LatencyNs/1e6),
+		Detail:    fmt.Sprintf("Process %d sync took %d nanoseconds", event.Tgid, event.LatencyNs),
+		ProcessID: l.getProcID(event.Tgid, event.StartBoottimeNs),
+		GPUID:     gpuID,
+	}
 }
-func buildSyncHangIncident(event source.Event) *Incident {
-	return &Incident{Type: IncidentSyncHang, FirstTS: int64(event.TsNano / 1e9), LastTS: int64(event.TsNano / 1e9), DedupeKey: fmt.Sprintf("sync_hang_%d_%d", event.Tgid, event.DeviceOrdinal), Summary: "Sync hang detected", Detail: fmt.Sprintf("Process %d sync hung for over 2 seconds", event.Tgid)}
+
+func (l *Layer) buildSyncHangIncident(event source.Event) *Incident {
+	epochSec := getBootTimeUnix() + int64(event.TsNano/1e9)
+	gpuID := l.resolveGPUID(event.Tgid, event.DeviceOrdinal)
+	return &Incident{
+		Type:      IncidentSyncHang,
+		FirstTS:   epochSec,
+		LastTS:    epochSec,
+		DedupeKey: fmt.Sprintf("sync_hang_%d_%d", event.Tgid, event.DeviceOrdinal),
+		Summary:   "Sync hang detected",
+		Detail:    fmt.Sprintf("Process %d sync hung for over 2 seconds", event.Tgid),
+		ProcessID: l.getProcID(event.Tgid, event.StartBoottimeNs),
+		GPUID:     gpuID,
+	}
 }
 
 func readProcessEnviron(pid uint32) ([]byte, error) {

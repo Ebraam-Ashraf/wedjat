@@ -86,17 +86,18 @@ export interface AggregateRow {
 }
 
 export interface Incident {
-  incident_id?: string;
-  type?: string;
-  last_ts?: string;
-  summary?: string;
-  detail?: string;
-  gpu_name?: string;
-  occurrences?: number;
-  last_time?: string;
-  first_time?: string;
-  command?: string;
-  tgid?: number;
+  incident_id: number;
+  type: string;
+  first_ts: number;
+  last_ts: number;
+  occurrences: number;
+  summary: string;
+  detail: string;
+  command: string;
+  tgid: number;
+  gpu_name: string;
+  first_time: string;
+  last_time: string;
 }
 
 export interface LiveEvent {
@@ -180,17 +181,12 @@ export interface HistoryRow {
   time?: string;
   gpu_uuid: string;
   gpu_name?: string;
-  util_gpu: number | null;
+  n?: number;
   util_gpu_avg?: number | null;
   util_gpu_max?: number | null;
-  mem_util: number | null;
-  temp: number | null;
   temp_max_c?: number | null;
-  power: number | null;
-  vram_used: number | null;
   vram_used_max_bytes?: number | null;
   power_mw_sum?: number | null;
-  n?: number;
 }
 
 export interface TelemetryStoreLike {

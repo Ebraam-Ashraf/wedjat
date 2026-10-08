@@ -44,6 +44,7 @@ type StatusResponse struct {
 // GPUResponse matches Node.js /api/gpus response
 type GPUResponse struct {
 	ID             int64   `json:"id"`
+	GpuDbID        int64   `json:"gpu_db_id"` // real DB primary key for history/aggregates queries
 	UUID           string  `json:"uuid"`
 	Index          int64   `json:"index"`
 	Name           string  `json:"name"`
@@ -164,8 +165,11 @@ func (d *Data) ListGPUsResponse(ctx context.Context) ([]GPUResponse, error) {
 	result := make([]GPUResponse, len(gpus))
 	for i := range gpus {
 		g := &gpus[i]
+		// Fetch the real DB primary key for this GPU by UUID.
+		dbID, _ := d.db.GetGPUDBIDByUUID(ctx, g.UUID)
 		result[i] = GPUResponse{
-			ID:             int64(g.Index),
+			ID:             dbID, // real PK, used by history/aggregates
+			GpuDbID:        dbID,
 			UUID:           g.UUID,
 			Index:          g.Index,
 			Name:           g.Name,
@@ -453,6 +457,12 @@ func (d *Data) RecentIncidentsResponse(ctx context.Context, limit int) ([]Incide
 		}
 	}
 	return result, nil
+}
+
+// GetGPUDBIDByUUID returns the internal database PK for a GPU identified by UUID.
+// Returns 0 if not found.
+func (d *Data) GetGPUDBIDByUUID(ctx context.Context, uuid string) (int64, error) {
+	return d.db.GetGPUDBIDByUUID(ctx, uuid)
 }
 
 // DayLayout is the date format used for daily database files.

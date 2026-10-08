@@ -14,6 +14,7 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -437,14 +438,40 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	gpuID := parseInt64(r.URL.Query().Get("gpu_id"), 0)
+
+	// Accept gpu_uuid (preferred) or legacy gpu_id
+	gpuUUID := r.URL.Query().Get("gpu_uuid")
+	gpuIDParam := r.URL.Query().Get("gpu_id")
+
+	var gpuID int64
+	if gpuUUID != "" {
+		// Look up the real DB PK from the UUID
+		id, err := s.data.GetGPUDBIDByUUID(ctx, gpuUUID)
+		if err != nil || id == 0 {
+			http.Error(w, "gpu not found", http.StatusNotFound)
+			return
+		}
+		gpuID = id
+	} else if gpuIDParam != "" {
+		id, err := strconv.ParseInt(gpuIDParam, 10, 64)
+		if err != nil || id <= 0 {
+			http.Error(w, "invalid gpu_id", http.StatusBadRequest)
+			return
+		}
+		gpuID = id
+	} else {
+		http.Error(w, "gpu_uuid or gpu_id required", http.StatusBadRequest)
+		return
+	}
+
 	startTS := parseInt64(r.URL.Query().Get("start_ts"), 0)
 	endTS := parseInt64(r.URL.Query().Get("end_ts"), 0)
 	day := r.URL.Query().Get("day")
 
-	if gpuID == 0 {
-		http.Error(w, "gpu_id is required", http.StatusBadRequest)
-		return
+	// Default: last 24 hours
+	if startTS == 0 && endTS == 0 && day == "" {
+		endTS = time.Now().Unix()
+		startTS = endTS - 24*60*60
 	}
 
 	history, err := s.data.GetHistoryResponse(ctx, gpuID, startTS, endTS, day)
@@ -489,6 +516,12 @@ func (s *Server) handleAggregates(w http.ResponseWriter, r *http.Request) {
 	startTS := parseInt64(r.URL.Query().Get("start_ts"), 0)
 	endTS := parseInt64(r.URL.Query().Get("end_ts"), 0)
 	day := r.URL.Query().Get("day")
+
+	// Default: last 24 hours
+	if startTS == 0 && endTS == 0 && day == "" {
+		endTS = time.Now().Unix()
+		startTS = endTS - 24*60*60
+	}
 
 	aggs, err := s.data.GetAggregatesResponse(ctx, procID, gpuID, startTS, endTS, day)
 	if err != nil {

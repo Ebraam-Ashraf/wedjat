@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"time"
 )
@@ -27,7 +28,11 @@ func OpenDBReadOnly(ctx context.Context, dataDir string) (*DB, error) {
 		return nil, fmt.Errorf("open metadata database: %w", err)
 	}
 
-	// Open today's daily database read-only
+	// Open today's daily database read-only.
+	// If the file doesn't exist yet (e.g. server starts before the daemon has
+	// written the first daily file), leave db.day nil — queries will return
+	// empty results until the daemon creates the file and the next rotation
+	// succeeds.
 	today := time.Now().UTC().Format(dayLayout)
 	if err := db.rotateDayDBReadOnly(ctx, today); err != nil {
 		db.meta.Close()
@@ -65,6 +70,8 @@ func openSQLiteReadOnly(ctx context.Context, path string) (*sql.DB, error) {
 }
 
 // rotateDayDBReadOnly opens the daily database for the given date in read-only mode.
+// If the file does not exist yet (e.g. the day just changed), db.day is set to nil
+// and nil is returned — callers must handle a nil db.day gracefully.
 func (db *DB) rotateDayDBReadOnly(ctx context.Context, date string) error {
 	if db.dayName == date && db.day != nil {
 		return nil
@@ -72,9 +79,18 @@ func (db *DB) rotateDayDBReadOnly(ctx context.Context, date string) error {
 
 	if db.day != nil {
 		db.day.Close()
+		db.day = nil
 	}
 
 	dayPath := filepath.Join(db.root, date+".db")
+
+	// If the file doesn't exist yet (new day, daemon hasn't written it yet),
+	// leave db.day nil — callers check for nil and return empty results.
+	if _, err := os.Stat(dayPath); os.IsNotExist(err) {
+		db.dayName = date
+		return nil
+	}
+
 	var err error
 	db.day, err = openSQLiteReadOnly(ctx, dayPath)
 	if err != nil {
@@ -195,14 +211,52 @@ func (db *DB) latestGPUSample(ctx context.Context, gpuID int64) (*GPUSampleMinut
 		if err != sql.ErrNoRows {
 			return nil, err
 		}
-		// sql.ErrNoRows means no sample data yet - return nil, not an error
+		// sql.ErrNoRows means no sample data yet — fall through to check previous days
+	}
+
+	// Today's db is nil or empty: scan previous day files for the most recent sample
+	entries, err := os.ReadDir(db.root)
+	if err != nil {
+		return nil, nil // can't read dir, not fatal
+	}
+	// Walk in reverse order (newest first)
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := entries[i]
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if filepath.Ext(name) != ".db" || name == "meta.db" {
+			continue
+		}
+		dateStr := name[:len(name)-3]
+		if dateStr == db.dayName {
+			continue // already tried today
+		}
+		if err := db.rotateDayDBReadOnly(ctx, dateStr); err != nil || db.day == nil {
+			continue
+		}
+		row := db.day.QueryRowContext(ctx, `
+			SELECT ts, gpu_id, n, util_gpu_sum, util_gpu_max, util_mem_sum,
+			       temp_max, power_mw_sum, vram_used_max,
+			       sm_clock_max, mem_clock_max, power_limit_mw, throttle_or, ecc_errors
+			FROM gpu_samples
+			WHERE gpu_id = ?
+			ORDER BY ts DESC
+			LIMIT 1
+		`, gpuID)
+		sample, err := scanGPUSample(row)
+		if err == nil {
+			return sample, nil
+		}
 	}
 
 	return nil, nil
 }
 
 // GetGPUSamples returns GPU samples for a time range.
-// If day is empty, uses today's database. Otherwise opens the specific day file.
+// If day is empty, searches available day files. If startTS/endTS are both 0,
+// defaults to the last 7 days. If the day file doesn't exist, returns empty results.
 func (db *DB) GetGPUSamples(ctx context.Context, gpuID int64, startTS, endTS int64, day string) ([]GPUSampleMinute, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -210,20 +264,75 @@ func (db *DB) GetGPUSamples(ctx context.Context, gpuID int64, startTS, endTS int
 		return nil, err
 	}
 
-	var database *sql.DB
-	if day == "" || day == time.Now().UTC().Format(dayLayout) {
-		database = db.day
-	} else {
+	// If a specific day is requested, open that file only.
+	if day != "" {
 		if err := db.rotateDayDBReadOnly(ctx, day); err != nil {
 			return nil, err
 		}
-		database = db.day
+		if db.day == nil {
+			return nil, nil // day file doesn't exist yet
+		}
+		return db.querySamples(ctx, db.day, gpuID, startTS, endTS)
 	}
 
-	if database == nil {
-		return nil, fmt.Errorf("no daily database available")
+	// No specific day: collect all available day files in the data directory
+	// and query each one that overlaps the requested time range.
+	if startTS == 0 && endTS == 0 {
+		// Default: last 7 days
+		endTS = time.Now().Unix()
+		startTS = endTS - 7*24*60*60
 	}
 
+	entries, err := os.ReadDir(db.root)
+	if err != nil {
+		return nil, fmt.Errorf("read data directory: %w", err)
+	}
+
+	var all []GPUSampleMinute
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if filepath.Ext(name) != ".db" || name == "meta.db" {
+			continue
+		}
+		dateStr := name[:len(name)-3] // strip ".db"
+		t, err := time.Parse(dayLayout, dateStr)
+		if err != nil {
+			continue
+		}
+		// Check if this day overlaps the requested range (day covers 00:00–23:59 UTC)
+		dayStart := t.Unix()
+		dayEnd := t.Add(24*time.Hour).Unix() - 1
+		if dayEnd < startTS || dayStart > endTS {
+			continue
+		}
+
+		if err := db.rotateDayDBReadOnly(ctx, dateStr); err != nil {
+			continue // skip unreadable day files
+		}
+		if db.day == nil {
+			continue
+		}
+		rows, err := db.querySamples(ctx, db.day, gpuID, startTS, endTS)
+		if err != nil {
+			continue
+		}
+		all = append(all, rows...)
+	}
+
+	// Sort by timestamp ascending
+	for i := 1; i < len(all); i++ {
+		for j := i; j > 0 && all[j].TS < all[j-1].TS; j-- {
+			all[j], all[j-1] = all[j-1], all[j]
+		}
+	}
+	return all, nil
+}
+
+// querySamples runs the gpu_samples SELECT on a given database handle.
+func (db *DB) querySamples(ctx context.Context, database *sql.DB, gpuID, startTS, endTS int64) ([]GPUSampleMinute, error) {
 	rows, err := database.QueryContext(ctx, `
 		SELECT ts, gpu_id, n, util_gpu_sum, util_gpu_max, util_mem_sum,
 		       temp_max, power_mw_sum, vram_used_max,

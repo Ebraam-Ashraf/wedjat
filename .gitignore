@@ -3,6 +3,10 @@ build/
 dist/
 **/build/
 
+# Keep the compile-time placeholder for the embedded UI directory.
+!ui/server/httpd/dist/
+!ui/server/httpd/dist/.gitkeep
+
 # Compiled BPF objects and skeletons
 *.bpf.o
 *.skel.h

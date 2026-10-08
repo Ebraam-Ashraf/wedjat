@@ -102,9 +102,14 @@ static __always_inline int finish_cuda_call(u32 api_id, long ret) {
     if (api_id == EVENT_SYNC) {
         u32 zero = 0;
         struct config_val *config = bpf_map_lookup_elem(&config_map, &zero);
-        if (config && config->sync_stall_us &&
-            latency >= (u64)config->sync_stall_us * 1000 &&
-            !(config->flags & CONFIG_F_RAW_CAPTURE))
+        /* A zero stall threshold means "use the built-in default". The userspace
+         * tracer writes the configured value verbatim, and the default config
+         * ships 0, so without this clamp every sync is silently dropped. */
+        u32 stall_us = config ? config->sync_stall_us : 0;
+        if (stall_us == 0)
+            stall_us = 250000;
+        if (latency >= (u64)stall_us * 1000 &&
+            !(config && config->flags & CONFIG_F_RAW_CAPTURE))
             submit_event(&event);
     }
     return record_aggregate(&event);
@@ -222,5 +227,21 @@ SEC("uretprobe/cuCtxSynchronize")
 int BPF_KRETPROBE(trace_cuCtxSynchronize_ret, long ret) {
     return finish_cuda_call(EVENT_SYNC, ret);
 }
+
+#define RUNTIME_SYNC_PROBES(name, symbol)                                                  \
+    SEC("uprobe/" symbol)                                                                  \
+    int BPF_KPROBE(trace_##name, void *stream) {                                           \
+        return begin_cuda_call(EVENT_SYNC, (u64)stream, 0);                                \
+    }                                                                                      \
+    SEC("uretprobe/" symbol)                                                               \
+    int BPF_KRETPROBE(trace_##name##_ret, long ret) {                                      \
+        return finish_cuda_call(EVENT_SYNC, ret);                                          \
+    }
+
+RUNTIME_SYNC_PROBES(cudaDeviceSynchronize, "cudaDeviceSynchronize")
+RUNTIME_SYNC_PROBES(cudaStreamSynchronize, "cudaStreamSynchronize")
+RUNTIME_SYNC_PROBES(cudaStreamSynchronize_ptsz, "cudaStreamSynchronize_ptsz")
+RUNTIME_SYNC_PROBES(cudaEventSynchronize, "cudaEventSynchronize")
+#undef RUNTIME_SYNC_PROBES
 
 char LICENSE[] SEC("license") = "GPL";

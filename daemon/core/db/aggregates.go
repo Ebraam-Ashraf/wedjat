@@ -118,6 +118,14 @@ ON CONFLICT(ts, proc_id, gpu_id) DO UPDATE SET
 	errors = agg.errors + excluded.errors`
 
 // Incident types.
+//
+// When incidents are recorded:
+//
+//	Incident        Trigger                              Typical cause
+//	---------------------------------------------------------------
+//	sync_stall      LatencyNs >= 250ms                   GPU oversubscribed, thermal throttle, heavy compute
+//	sync_hang       Kernel sets FlagHungSync             GPU hang (driver/kernel bug, HW fault)
+//	xid             NVIDIA driver Xid interrupt          ECC error, thermal, power, NVLink failure
 const (
 	IncidentSyncStall = "sync_stall"
 	IncidentSyncHang  = "sync_hang"

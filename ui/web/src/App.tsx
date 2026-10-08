@@ -6,14 +6,13 @@ import { useStoreValue } from './hooks/useStoreValue';
 import { useTheme } from './hooks/useTheme';
 import { DEBUG } from './flags';
 import StatusBar from './components/StatusBar';
+import TerminalShell from './components/TerminalShell';
 import DebugOverlay from './components/DebugOverlay';
 import AsciiArt from './components/AsciiArt';
 import Dashboard from './pages/Dashboard';
 import Processes from './pages/Processes';
-import Events from './pages/Events';
 import History from './pages/History';
 import GpuDetail from './pages/GpuDetail';
-import GPUs from './pages/GPUs';
 import Incidents from './pages/Incidents';
 import maskArt from '../../../assets/ascii/mask.txt?raw';
 import type { StatusResponse, GpuInfo } from './types';
@@ -66,9 +65,7 @@ export default function App() {
     };
   }, []);
 
-  const path = location.pathname;
-  const linkClass = (href: string) =>
-    `nav-link${path === href ? ' nav-link-active' : ''}`;
+const path = location.pathname;
   const filteredGpu = selectedGpu === 'all' ? null : selectedGpu;
   const disconnected =
     !connected ||
@@ -78,54 +75,27 @@ export default function App() {
 
   return (
     <div className={`app-shell${disconnected ? ' is-stale' : ''}`}>
-      <StatusBar
-        store={store}
+      <TerminalShell
+        header={
+          <StatusBar
+            store={store}
+            connected={connected}
+            status={status}
+            statusError={statusError}
+            gpus={gpus}
+            selectedGpu={selectedGpu}
+            onSelectGpu={setSelectedGpu}
+            live={live}
+            onToggleLive={() => setLive((v) => !v)}
+            theme={theme}
+            onToggleTheme={toggleTheme}
+          />
+        }
         connected={connected}
-        status={status}
-        statusError={statusError}
-        gpus={gpus}
-        selectedGpu={selectedGpu}
-        onSelectGpu={setSelectedGpu}
-        live={live}
-        onToggleLive={() => setLive((v) => !v)}
         theme={theme}
         onToggleTheme={toggleTheme}
-      />
-
-      {/* Shell body: sidebar + content area */}
-      <div className="flex min-h-[calc(100vh-var(--topbar-height)-50px)]">
-        {/* Sidebar nav */}
-        <nav
-          className="sidebar-nav flex flex-col gap-[2px] p-4 min-w-[160px] border-r border-dashed border-border"
-          aria-label="Main navigation"
-        >
-          <Link className={linkClass('/')} to="/">
-            Live
-          </Link>
-          <Link className={linkClass('/processes')} to="/processes">
-            Processes
-          </Link>
-          <Link className={linkClass('/events')} to="/events">
-            Events
-          </Link>
-          <Link className={linkClass('/incidents')} to="/incidents">
-            Incidents
-          </Link>
-           <Link className={linkClass('/history')} to="/history">
-             History
-           </Link>
-           <Link className={linkClass('/gpus')} to="/gpus">
-             GPUs
-           </Link>
-        </nav>
-
-        {/* Content area */}
-        <div className="flex-1 min-w-0">
-          {breadcrumb && (
-            <div className="px-[var(--page-padding-x)] py-2 text-text-dim text-xs font-mono tracking-wide">
-              {breadcrumb}
-            </div>
-          )}
+        gpuCount={gpus.length}
+      >
           <main className="page-wrap">
             <Routes>
               <Route
@@ -157,27 +127,12 @@ export default function App() {
                 }
               />
               <Route
-                path="/events"
-                element={
-                  <Events
-                    store={store}
-                    gpus={gpus}
-                    selectedGpu={filteredGpu}
-                    disconnected={disconnected}
-                  />
-                }
-              />
-              <Route
                 path="/incidents"
                 element={<Incidents />}
               />
               <Route
                 path="/history"
                 element={<History gpus={gpus} selectedGpu={filteredGpu} />}
-              />
-              <Route
-                path="/gpus"
-                element={<GPUs store={store} gpus={gpus} />}
               />
               <Route
                 path="*"
@@ -193,13 +148,7 @@ export default function App() {
               />
             </Routes>
           </main>
-        </div>
-      </div>
-
-      {/* Footer */}
-      <footer className="footer">
-        WEDJAT &middot; Single host GPU telemetry &middot; Data can be incomplete when socket messages are dropped
-      </footer>
+      </TerminalShell>
 
       {DEBUG && <DebugOverlay store={store} />}
     </div>

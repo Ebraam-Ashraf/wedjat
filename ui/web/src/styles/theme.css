@@ -61,23 +61,23 @@
   --card-padding: 20px;
   --card-padding-sm: 16px;
   --panel-padding: 18px;
-  --page-padding-x: clamp(16px, 4vw, 56px);
-  --page-padding-y: 30px;
-  --page-max-width: 1480px;
-  --page-max-width-narrow: 1152px;
+  --page-padding-x: clamp(12px, 2vw, 28px);
+  --page-padding-y: 24px;
+  --page-max-width: 1680px;
+  --page-max-width-narrow: 1480px;
 
   /* Typography scale */
-  --text-xs: 9px;
-  --text-sm: 10px;
-  --text-base: 11px;
-  --text-md: 12px;
-  --text-lg: 13px;
-  --text-xl: 14px;
-  --text-2xl: 16px;
-  --text-3xl: 19px;
-  --text-4xl: 22px;
-  --text-5xl: 28px;
-  --text-6xl: clamp(3.8rem, 8vw, 4.7rem);
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 15px;
+  --text-xl: 16px;
+  --text-2xl: 18px;
+  --text-3xl: 21px;
+  --text-4xl: 26px;
+  --text-5xl: 32px;
+  --text-6xl: clamp(4rem, 8vw, 5rem);
 
   --leading-tight: 1;
   --leading-snug: 1.2;

@@ -4,17 +4,22 @@ import type { HistoryRow } from '../types';
 
 export interface HistoryTableProps {
   limit?: number;
+  gpuUuid?: string;
 }
 
-function HistoryTable({ limit = 100 }: HistoryTableProps) {
+function HistoryTable({ limit = 100, gpuUuid }: HistoryTableProps) {
   const [rows, setRows] = useState<HistoryRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!gpuUuid) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
-    apiGet<HistoryRow[]>('/api/history')
+    apiGet<HistoryRow[]>(`/api/history?gpu_uuid=${encodeURIComponent(gpuUuid)}`)
       .then((data) => {
         if (cancelled) return;
         setRows(data.slice(0, limit));
@@ -28,8 +33,9 @@ function HistoryTable({ limit = 100 }: HistoryTableProps) {
     return () => {
       cancelled = true;
     };
-  }, [limit]);
+  }, [gpuUuid, limit]);
 
+  if (!gpuUuid) return <p style={{ color: 'var(--text-dim)' }}>Waiting for GPU metadata…</p>;
   if (loading) return <p style={{ color: 'var(--text-dim)' }}>Loading history…</p>;
   if (error) return <p style={{ color: 'var(--critical)' }}>Error: {error}</p>;
   if (rows.length === 0) return <p style={{ color: 'var(--text-dim)' }}>No history available.</p>;
@@ -49,20 +55,24 @@ function HistoryTable({ limit = 100 }: HistoryTableProps) {
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.id}>
-              <td style={{ padding: 6, fontFamily: 'monospace' }}>{new Date(r.ts).toLocaleString()}</td>
-              <td style={{ padding: 6, textAlign: 'right' }}>{r.util_gpu?.toFixed(1) ?? 'n/a'}</td>
-              <td style={{ padding: 6, textAlign: 'right' }}>{r.mem_util?.toFixed(1) ?? 'n/a'}</td>
-              <td style={{ padding: 6, textAlign: 'right' }}>{r.temp?.toFixed(0) ?? 'n/a'}</td>
+            <tr key={`${r.ts}-${r.gpu_uuid}`}>
+              <td style={{ padding: 6, fontFamily: 'monospace' }}>{new Date(r.ts * 1000).toLocaleString()}</td>
               <td style={{ padding: 6, textAlign: 'right' }}>
-                {r.power != null ? (r.power / 1000).toFixed(1) : 'n/a'}
+                {r.util_gpu_avg != null ? r.util_gpu_avg.toFixed(1) : 'n/a'}
               </td>
               <td style={{ padding: 6, textAlign: 'right' }}>
-                {r.vram_used != null
-                  ? `${(r.vram_used / 1_048_576).toFixed(0)} MB`
-                  : r.vram_used_max_bytes != null
-                    ? `${(r.vram_used_max_bytes / 1_073_741_824).toFixed(2)} GB`
-                    : 'n/a'}
+                {r.util_gpu_max != null ? r.util_gpu_max.toFixed(1) : 'n/a'}
+              </td>
+              <td style={{ padding: 6, textAlign: 'right' }}>
+                {r.temp_max_c != null ? r.temp_max_c.toFixed(0) : 'n/a'}
+              </td>
+              <td style={{ padding: 6, textAlign: 'right' }}>
+                {r.power_mw_sum != null ? (r.power_mw_sum / 1_000_000 / r.n).toFixed(1) : 'n/a'}
+              </td>
+              <td style={{ padding: 6, textAlign: 'right' }}>
+                {r.vram_used_max_bytes != null
+                  ? `${(r.vram_used_max_bytes / 1_073_741_824).toFixed(2)} GB`
+                  : 'n/a'}
               </td>
             </tr>
           ))}

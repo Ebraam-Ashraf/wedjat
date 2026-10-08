@@ -34,7 +34,7 @@ case "$MODE" in
     cd "$WEB_DIR"
     if [ ! -d node_modules ]; then
       echo "==> Installing web UI dependencies (npm ci)"
-      npm ci
+      npm ci --prefix "$WEB_DIR"
     fi
     echo "==> Starting Vite HMR dev server..."
     exec npm run dev

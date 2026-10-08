@@ -121,10 +121,6 @@ export default function GpuDetail({ store, gpus }: GpuDetailProps) {
         <div>
           <p className="eyebrow">GPU DETAIL</p>
           <h1>{meta?.name || `GPU ${sample?.index ?? id}`}</h1>
-          <p className="text-text-dim">
-            {meta?.uuid || sample?.uuid || 'UUID n/a'} · index{' '}
-            {meta?.index ?? sample?.index ?? 'n/a'}
-          </p>
         </div>
         <Link className={linkCls} to="/">
           ← All GPUs
@@ -301,7 +297,7 @@ export default function GpuDetail({ store, gpus }: GpuDetailProps) {
               </div>
             ) : (
               <p className="text-ok text-sm">
-                No throttle reason reported in the latest sample.
+                GPU idle — no throttle reasons.
               </p>
             )}
           </section>

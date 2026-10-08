@@ -11,7 +11,7 @@ import (
 
 // attachAll attaches every program by the kind of section it was compiled
 // into, recording failures instead of aborting.
-func (t *Tracer) attachAll(libcudaPath string) {
+func (t *Tracer) attachAll(libcudaPath, libcudartPath string) {
 	keys := make([]string, 0, len(t.collection.Programs))
 	for key := range t.collection.Programs {
 		keys = append(keys, key)
@@ -19,6 +19,7 @@ func (t *Tracer) attachAll(libcudaPath string) {
 	sort.Strings(keys)
 
 	var cuda *link.Executable
+	var cudart *link.Executable
 	for _, key := range keys {
 		prog := t.collection.Programs[key]
 		section, ok := t.sections[key]
@@ -41,22 +42,65 @@ func (t *Tracer) attachAll(libcudaPath string) {
 			l, err = link.Tracepoint(parts[1], parts[2], prog, nil)
 
 		case strings.HasPrefix(section, "uprobe/"):
-			if cuda == nil {
-				if cuda, err = link.OpenExecutable(libcudaPath); err != nil {
-					t.fail(key, err.Error())
+			symbol := strings.TrimPrefix(section, "uprobe/")
+			// Runtime API probes (cuda*) go to libcudart.so, Driver API (cu*) to libcuda.so
+			var exe *link.Executable
+			if strings.HasPrefix(symbol, "cuda") {
+				if libcudartPath == "" {
+					t.fail(key, "libcudart path not provided for "+symbol)
 					continue
 				}
+				if cudart == nil {
+					if cudart, err = link.OpenExecutable(libcudartPath); err != nil {
+						t.fail(key, "open libcudart: "+err.Error())
+						continue
+					}
+				}
+				exe = cudart
+			} else {
+				if libcudaPath == "" {
+					t.fail(key, "libcuda path not provided for "+symbol)
+					continue
+				}
+				if cuda == nil {
+					if cuda, err = link.OpenExecutable(libcudaPath); err != nil {
+						t.fail(key, "open libcuda: "+err.Error())
+						continue
+					}
+				}
+				exe = cuda
 			}
-			l, err = cuda.Uprobe(strings.TrimPrefix(section, "uprobe/"), prog, nil)
+			l, err = exe.Uprobe(symbol, prog, nil)
 
 		case strings.HasPrefix(section, "uretprobe/"):
-			if cuda == nil {
-				if cuda, err = link.OpenExecutable(libcudaPath); err != nil {
-					t.fail(key, err.Error())
+			symbol := strings.TrimPrefix(section, "uretprobe/")
+			var exe *link.Executable
+			if strings.HasPrefix(symbol, "cuda") {
+				if libcudartPath == "" {
+					t.fail(key, "libcudart path not provided for "+symbol)
 					continue
 				}
+				if cudart == nil {
+					if cudart, err = link.OpenExecutable(libcudartPath); err != nil {
+						t.fail(key, "open libcudart: "+err.Error())
+						continue
+					}
+				}
+				exe = cudart
+			} else {
+				if libcudaPath == "" {
+					t.fail(key, "libcuda path not provided for "+symbol)
+					continue
+				}
+				if cuda == nil {
+					if cuda, err = link.OpenExecutable(libcudaPath); err != nil {
+						t.fail(key, "open libcuda: "+err.Error())
+						continue
+					}
+				}
+				exe = cuda
 			}
-			l, err = cuda.Uretprobe(strings.TrimPrefix(section, "uretprobe/"), prog, nil)
+			l, err = exe.Uretprobe(symbol, prog, nil)
 
 		case strings.HasPrefix(section, "kprobe/"):
 			l, err = attachKprobe(prog, strings.TrimPrefix(section, "kprobe/"), false)

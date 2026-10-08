@@ -7,16 +7,21 @@ interface HistoryProps {
   selectedGpu?: string | null;
 }
 
-function History(_props: HistoryProps) {
+function History({ gpus = [], selectedGpu }: HistoryProps) {
   useEffect(() => {
     document.title = 'Wedjat · History';
   }, []);
+
+  const gpu = selectedGpu
+    ? gpus.find((item) => item.uuid === selectedGpu)
+    : gpus[0];
+  const gpuUuid = gpu?.uuid;
 
   return (
     <div className="page-stack">
       <h1>History</h1>
       <div className="glass-panel rounded-xl p-6">
-        <HistoryTable />
+        <HistoryTable gpuUuid={gpuUuid} />
       </div>
     </div>
   );
