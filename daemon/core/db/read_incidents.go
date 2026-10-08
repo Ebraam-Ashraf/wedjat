@@ -8,9 +8,9 @@ import (
 
 // IncidentWithDetails includes incident with joined process/GPU info.
 type IncidentWithDetails struct {
-	IncidentID  int64
+	IncidentID int64
 	Incident
-	Occurrences int64 `json:"occurrences"`
+	Occurrences int64            `json:"occurrences"`
 	Process     *ProcessIdentity `json:"process,omitempty"`
 	GPU         *GPUIdentity     `json:"gpu,omitempty"`
 }

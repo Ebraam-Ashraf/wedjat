@@ -174,20 +174,20 @@ func (db *DB) ListGPUs(ctx context.Context) ([]GPUWithStats, error) {
 
 // GPUSampleMinute represents one minute of GPU telemetry.
 type GPUSampleMinute struct {
-	TS            int64   `json:"ts"`
-	GPUID         int64   `json:"gpu_id"`
-	N             int64   `json:"n"`
-	UtilGPUAvg    *int64  `json:"util_gpu_avg,omitempty"`
-	UtilGPUMax    *int64  `json:"util_gpu_max,omitempty"`
-	UtilMemAvg    *int64  `json:"util_mem_avg,omitempty"`
-	TempMax       *int64  `json:"temp_max,omitempty"`
-	PowerMWAvg    *int64  `json:"power_mw_avg,omitempty"`
-	VRAMUsedMax   *int64  `json:"vram_used_max,omitempty"`
-	SMClockMax    *int64  `json:"sm_clock_max,omitempty"`
-	MemClockMax   *int64  `json:"mem_clock_max,omitempty"`
-	PowerLimitMW  *int64  `json:"power_limit_mw,omitempty"`
-	ThrottleOR    *int64  `json:"throttle_or,omitempty"`
-	ECCErrors     *int64  `json:"ecc_errors,omitempty"`
+	TS           int64  `json:"ts"`
+	GPUID        int64  `json:"gpu_id"`
+	N            int64  `json:"n"`
+	UtilGPUAvg   *int64 `json:"util_gpu_avg,omitempty"`
+	UtilGPUMax   *int64 `json:"util_gpu_max,omitempty"`
+	UtilMemAvg   *int64 `json:"util_mem_avg,omitempty"`
+	TempMax      *int64 `json:"temp_max,omitempty"`
+	PowerMWAvg   *int64 `json:"power_mw_avg,omitempty"`
+	VRAMUsedMax  *int64 `json:"vram_used_max,omitempty"`
+	SMClockMax   *int64 `json:"sm_clock_max,omitempty"`
+	MemClockMax  *int64 `json:"mem_clock_max,omitempty"`
+	PowerLimitMW *int64 `json:"power_limit_mw,omitempty"`
+	ThrottleOR   *int64 `json:"throttle_or,omitempty"`
+	ECCErrors    *int64 `json:"ecc_errors,omitempty"`
 }
 
 // latestGPUSample fetches the most recent minute sample for a GPU.

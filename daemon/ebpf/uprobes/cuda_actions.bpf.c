@@ -228,14 +228,14 @@ int BPF_KRETPROBE(trace_cuCtxSynchronize_ret, long ret) {
     return finish_cuda_call(EVENT_SYNC, ret);
 }
 
-#define RUNTIME_SYNC_PROBES(name, symbol)                                                  \
-    SEC("uprobe/" symbol)                                                                  \
-    int BPF_KPROBE(trace_##name, void *stream) {                                           \
-        return begin_cuda_call(EVENT_SYNC, (u64)stream, 0);                                \
-    }                                                                                      \
-    SEC("uretprobe/" symbol)                                                               \
-    int BPF_KRETPROBE(trace_##name##_ret, long ret) {                                      \
-        return finish_cuda_call(EVENT_SYNC, ret);                                          \
+#define RUNTIME_SYNC_PROBES(name, symbol)                                              \
+    SEC("uprobe/" symbol)                                                              \
+    int BPF_KPROBE(trace_##name, void *stream) {                                       \
+        return begin_cuda_call(EVENT_SYNC, (u64)stream, 0);                            \
+    }                                                                                  \
+    SEC("uretprobe/" symbol)                                                           \
+    int BPF_KRETPROBE(trace_##name##_ret, long ret) {                                  \
+        return finish_cuda_call(EVENT_SYNC, ret);                                      \
     }
 
 RUNTIME_SYNC_PROBES(cudaDeviceSynchronize, "cudaDeviceSynchronize")

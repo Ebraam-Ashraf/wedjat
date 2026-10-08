@@ -81,8 +81,8 @@ func DefaultConfig() Config {
 			EbpfDrainTickMs:  1000,
 		},
 		Tracing: TracingConfig{
-			Enabled:                true,
-			FixLibcudaPermissions:  true,
+			Enabled:                 true,
+			FixLibcudaPermissions:   true,
 			FixLibcudartPermissions: true,
 		},
 	}

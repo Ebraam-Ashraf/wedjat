@@ -8,7 +8,7 @@ import (
 
 // ProcessWithVRAM includes process identity with VRAM info.
 type ProcessWithVRAM struct {
-	ProcID     int64
+	ProcID int64
 	ProcessIdentity
 	EndTS      *int64        `json:"end_ts,omitempty"`
 	EndReason  string        `json:"end_reason,omitempty"`

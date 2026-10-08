@@ -98,6 +98,8 @@ ci: check fmt
 	@$(MAKE) -C "$(DAEMON_DIR)" bpf
 	@echo "==> CI: building development daemon"
 	@$(MAKE) -C "$(DAEMON_DIR)" build-dev GOARCH=$(GOARCH)
+	@echo "==> CI: preparing UI dummy dist for tests"
+	@mkdir -p "$(UI_DIR)/server/httpd/dist" && touch "$(UI_DIR)/server/httpd/dist/.keep"
 	@echo "==> CI: running Go tests"
 	@cd $(ROOT_DIR) && go test ./...
 	@echo "==> CI: running daemon tests"

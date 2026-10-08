@@ -34,7 +34,6 @@ type clientQueues struct {
 	other chan []byte
 }
 
-
 // SocketOptions configures the listening socket.
 type SocketOptions struct {
 	// Group, when non-empty, is the UNIX group that owns the socket file.

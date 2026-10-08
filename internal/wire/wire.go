@@ -37,31 +37,31 @@ func Decode(line []byte) (Envelope, error) {
 
 // Message type constants
 const (
-	TypeGPU     = "gpu"
-	TypeProcs   = "procs"
-	TypeXid     = "xid"
-	TypeAgg     = "agg"
-	TypeEvent   = "event"
+	TypeGPU   = "gpu"
+	TypeProcs = "procs"
+	TypeXid   = "xid"
+	TypeAgg   = "agg"
+	TypeEvent = "event"
 )
 
 // GPUSample represents a snapshot of GPU telemetry for one device.
 // JSON fields use PascalCase to match the frontend's expectations.
 type GPUSample struct {
-	TsNano         int64   `json:"TsNano"`
-	UUID           string  `json:"UUID"`
-	Index          uint    `json:"Index"`
-	UtilGPU        uint    `json:"UtilGPU"`
-	UtilMem        uint    `json:"UtilMem"`
-	MemUsed        uint64  `json:"MemUsed"`
-	TempC          uint    `json:"TempC"`
-	PowerMW        uint    `json:"PowerMW"`
-	PowerLimitMW   uint    `json:"PowerLimitMW"`
-	SMClockMHz     uint    `json:"SMClockMHz"`
-	MemClockMHz    uint    `json:"MemClockMHz"`
-	ThrottleReason uint64  `json:"ThrottleReason"`
-	ECCErrors      uint64  `json:"ECCErrors"`
-	ValidFields    uint64  `json:"ValidFields"`
-	Valid          bool    `json:"Valid"`
+	TsNano         int64  `json:"TsNano"`
+	UUID           string `json:"UUID"`
+	Index          uint   `json:"Index"`
+	UtilGPU        uint   `json:"UtilGPU"`
+	UtilMem        uint   `json:"UtilMem"`
+	MemUsed        uint64 `json:"MemUsed"`
+	TempC          uint   `json:"TempC"`
+	PowerMW        uint   `json:"PowerMW"`
+	PowerLimitMW   uint   `json:"PowerLimitMW"`
+	SMClockMHz     uint   `json:"SMClockMHz"`
+	MemClockMHz    uint   `json:"MemClockMHz"`
+	ThrottleReason uint64 `json:"ThrottleReason"`
+	ECCErrors      uint64 `json:"ECCErrors"`
+	ValidFields    uint64 `json:"ValidFields"`
+	Valid          bool   `json:"Valid"`
 }
 
 // ProcessSample represents per-process GPU usage.
@@ -74,9 +74,9 @@ type ProcessSample struct {
 
 // ProcList bundles all per-process entries with completion status.
 type ProcList struct {
-	TsNano   int64            `json:"TsNano"`
-	Procs    []ProcessSample  `json:"Procs"`
-	Complete bool             `json:"Complete"`
+	TsNano   int64           `json:"TsNano"`
+	Procs    []ProcessSample `json:"Procs"`
+	Complete bool            `json:"Complete"`
 }
 
 // Xid represents an Xid event from the NVIDIA driver.
@@ -89,19 +89,19 @@ type Xid struct {
 
 // AggRow represents aggregated CUDA operation counts from eBPF.
 type AggRow struct {
-	TsNano       int64   `json:"TsNano"`
-	Tgid         uint32  `json:"Tgid"`
-	Ordinal      uint32  `json:"Ordinal"`
-	ApiID        uint32  `json:"ApiID"`
-	Count        uint64  `json:"Count"`
-	Bytes        uint64  `json:"Bytes"`
-	LatencySumNs uint64  `json:"LatencySumNs"`
-	LatencyMaxNs uint64  `json:"LatencyMaxNs"`
-	AllocBytes   uint64  `json:"AllocBytes"`
-	FreeBytes    uint64  `json:"FreeBytes"`
-	Errors       uint64  `json:"Errors"`
-	UvmFaults    uint64  `json:"UvmFaults"`
-	UvmEvicts    uint64  `json:"UvmEvicts"`
+	TsNano       int64  `json:"TsNano"`
+	Tgid         uint32 `json:"Tgid"`
+	Ordinal      uint32 `json:"Ordinal"`
+	ApiID        uint32 `json:"ApiID"`
+	Count        uint64 `json:"Count"`
+	Bytes        uint64 `json:"Bytes"`
+	LatencySumNs uint64 `json:"LatencySumNs"`
+	LatencyMaxNs uint64 `json:"LatencyMaxNs"`
+	AllocBytes   uint64 `json:"AllocBytes"`
+	FreeBytes    uint64 `json:"FreeBytes"`
+	Errors       uint64 `json:"Errors"`
+	UvmFaults    uint64 `json:"UvmFaults"`
+	UvmEvicts    uint64 `json:"UvmEvicts"`
 }
 
 // Event represents a raw eBPF event.

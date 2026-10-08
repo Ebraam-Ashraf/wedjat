@@ -45,10 +45,10 @@ type TracerConfig struct {
 // DefaultTracerConfig returns the recommended defaults for production.
 func DefaultTracerConfig() TracerConfig {
 	return TracerConfig{
-		Enabled:                true,
-		FixLibcudaPermissions:  true,
+		Enabled:                 true,
+		FixLibcudaPermissions:   true,
 		FixLibcudartPermissions: true,
-		DrainTickMs:            1000,
+		DrainTickMs:             1000,
 	}
 }
 

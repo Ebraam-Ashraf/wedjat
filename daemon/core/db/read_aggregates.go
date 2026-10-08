@@ -11,9 +11,9 @@ import (
 
 // AggregateMinute represents one minute of aggregated CUDA counters for a process on a GPU.
 type AggregateMinute struct {
-	TS         int64 `json:"ts"`
-	ProcessID  int64 `json:"process_id"`
-	GPUID      int64 `json:"gpu_id"`
+	TS        int64 `json:"ts"`
+	ProcessID int64 `json:"process_id"`
+	GPUID     int64 `json:"gpu_id"`
 
 	Launches    int64 `json:"launches"`
 	MemcpyCalls int64 `json:"memcpy_calls"`
@@ -77,7 +77,7 @@ func (db *DB) GetAggregates(ctx context.Context, processID, gpuID int64, startTS
 			continue
 		}
 		dayStart := t.Unix()
-		dayEnd := t.Add(24 * time.Hour).Unix() - 1
+		dayEnd := t.Add(24*time.Hour).Unix() - 1
 		if dayEnd < startTS || dayStart > endTS {
 			continue
 		}
@@ -157,9 +157,9 @@ func (db *DB) GetAggregatesByGPU(ctx context.Context, gpuID int64, startTS, endT
 
 // AggregateSummary provides summary statistics for aggregates.
 type AggregateSummary struct {
-	ProcessID  int64 `json:"process_id"`
-	GPUID      int64 `json:"gpu_id"`
-	Minutes    int64 `json:"minutes"`
+	ProcessID int64 `json:"process_id"`
+	GPUID     int64 `json:"gpu_id"`
+	Minutes   int64 `json:"minutes"`
 
 	TotalLaunches    int64 `json:"total_launches"`
 	TotalMemcpyCalls int64 `json:"total_memcpy_calls"`

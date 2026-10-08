@@ -35,37 +35,37 @@ func (d *Data) Close() error {
 
 // StatusResponse matches Node.js /api/status response
 type StatusResponse struct {
-	Connected     bool   `json:"connected"`
-	HeartbeatAge  int64  `json:"heartbeat_age"`
-	Warning       string `json:"warning,omitempty"`
-	SocketPath    string `json:"socket_path"`
+	Connected    bool   `json:"connected"`
+	HeartbeatAge int64  `json:"heartbeat_age"`
+	Warning      string `json:"warning,omitempty"`
+	SocketPath   string `json:"socket_path"`
 }
 
 // GPUResponse matches Node.js /api/gpus response
 type GPUResponse struct {
-	ID             int64   `json:"id"`
-	GpuDbID        int64   `json:"gpu_db_id"` // real DB primary key for history/aggregates queries
-	UUID           string  `json:"uuid"`
-	Index          int64   `json:"index"`
-	Name           string  `json:"name"`
-	PCIBusID       string  `json:"pci_bus_id"`
-	VRAMTotalBytes int64   `json:"vram_total_bytes"`
-	DriverVersion  string  `json:"driver_version"`
-	FirstSeen      int64   `json:"first_seen"`
-	LastSeen       int64   `json:"last_seen"`
+	ID             int64  `json:"id"`
+	GpuDbID        int64  `json:"gpu_db_id"` // real DB primary key for history/aggregates queries
+	UUID           string `json:"uuid"`
+	Index          int64  `json:"index"`
+	Name           string `json:"name"`
+	PCIBusID       string `json:"pci_bus_id"`
+	VRAMTotalBytes int64  `json:"vram_total_bytes"`
+	DriverVersion  string `json:"driver_version"`
+	FirstSeen      int64  `json:"first_seen"`
+	LastSeen       int64  `json:"last_seen"`
 }
 
 // ProcessResponse matches Node.js /api/processes response
 type ProcessResponse struct {
-	ID             int64   `json:"id"`
-	PID            int64   `json:"pid"`
-	Command        string  `json:"command"`
-	GPU            int64   `json:"gpu"`
-	GPUUUID        string  `json:"gpu_uuid"`
-	LastVRAMBytes  int64   `json:"last_vram_bytes"`
-	PeakVRAMBytes  int64   `json:"peak_vram_bytes"`
-	FirstSeen      int64   `json:"first_seen"`
-	Running        bool    `json:"running"`
+	ID            int64  `json:"id"`
+	PID           int64  `json:"pid"`
+	Command       string `json:"command"`
+	GPU           int64  `json:"gpu"`
+	GPUUUID       string `json:"gpu_uuid"`
+	LastVRAMBytes int64  `json:"last_vram_bytes"`
+	PeakVRAMBytes int64  `json:"peak_vram_bytes"`
+	FirstSeen     int64  `json:"first_seen"`
+	Running       bool   `json:"running"`
 }
 
 // HistoryResponse matches Node.js /api/history response
@@ -84,24 +84,24 @@ type HistoryResponse struct {
 
 // AggregateResponse matches Node.js /api/aggregates response
 type AggregateResponse struct {
-	TS           int64  `json:"ts"`
-	Time         string `json:"time"`
-	Command      string `json:"command"`
-	TGID         int64  `json:"tgid"`
-	GPUName      string `json:"gpu_name"`
-	Launches     int64  `json:"launches"`
-	MemcpyCalls  int64  `json:"memcpy_calls"`
-	MemcpyBytes  int64  `json:"memcpy_bytes"`
-	AllocCalls   int64  `json:"alloc_calls"`
-	AllocBytes   int64  `json:"alloc_bytes"`
-	FreeBytes    int64  `json:"free_bytes"`
-	SyncCalls    int64  `json:"sync_calls"`
-	SyncUsSum    int64  `json:"sync_us_sum"`
-	SyncUsMax    int64  `json:"sync_us_max"`
-	IoctlCalls   int64  `json:"ioctl_calls"`
-	UvmFaults    int64  `json:"uvm_faults"`
-	UvmEvicts    int64  `json:"uvm_evicts"`
-	Errors       int64  `json:"errors"`
+	TS          int64  `json:"ts"`
+	Time        string `json:"time"`
+	Command     string `json:"command"`
+	TGID        int64  `json:"tgid"`
+	GPUName     string `json:"gpu_name"`
+	Launches    int64  `json:"launches"`
+	MemcpyCalls int64  `json:"memcpy_calls"`
+	MemcpyBytes int64  `json:"memcpy_bytes"`
+	AllocCalls  int64  `json:"alloc_calls"`
+	AllocBytes  int64  `json:"alloc_bytes"`
+	FreeBytes   int64  `json:"free_bytes"`
+	SyncCalls   int64  `json:"sync_calls"`
+	SyncUsSum   int64  `json:"sync_us_sum"`
+	SyncUsMax   int64  `json:"sync_us_max"`
+	IoctlCalls  int64  `json:"ioctl_calls"`
+	UvmFaults   int64  `json:"uvm_faults"`
+	UvmEvicts   int64  `json:"uvm_evicts"`
+	Errors      int64  `json:"errors"`
 }
 
 // IncidentResponse matches Node.js /api/incidents response
@@ -148,10 +148,10 @@ func (d *Data) GetStatus(ctx context.Context) (*StatusResponse, error) {
 	}
 
 	return &StatusResponse{
-		Connected:     connected,
-		HeartbeatAge:  heartbeatAge,
-		Warning:       warning,
-		SocketPath:    "/run/wedjatd/socket",
+		Connected:    connected,
+		HeartbeatAge: heartbeatAge,
+		Warning:      warning,
+		SocketPath:   "/run/wedjatd/socket",
 	}, nil
 }
 

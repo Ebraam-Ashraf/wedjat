@@ -18,18 +18,18 @@ import (
 type Client struct {
 	socketPath string
 
-	mu         sync.Mutex
-	conn       net.Conn
-	reader     *bufio.Reader
-	reconnect  bool
+	mu          sync.Mutex
+	conn        net.Conn
+	reader      *bufio.Reader
+	reconnect   bool
 	reconnectCh chan struct{}
 
 	// Callbacks for each message type
-	OnGPU     func([]wire.GPUSample)
-	OnProcs   func(*wire.ProcList)
-	OnXid     func(*wire.Xid)
-	OnAgg     func([]wire.AggRow)
-	OnEvent   func(*wire.Event)
+	OnGPU   func([]wire.GPUSample)
+	OnProcs func(*wire.ProcList)
+	OnXid   func(*wire.Xid)
+	OnAgg   func([]wire.AggRow)
+	OnEvent func(*wire.Event)
 }
 
 // New creates a new daemon socket client.
