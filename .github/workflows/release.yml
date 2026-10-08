@@ -34,8 +34,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 \
-            clang llvm libbpf-dev libnvidia-ml-dev nvidia-cuda-dev \
-            nvidia-cuda-toolkit linux-headers-generic linux-tools-common \
+            clang llvm libbpf-dev libnvidia-ml-dev \
+            linux-headers-generic linux-tools-common \
             linux-tools-generic pkg-config gcc make
           
       - name: Install BPFTool
@@ -63,7 +63,7 @@ jobs:
           if [ -z "$NVML_HEADER" ]; then
             echo "nvml.h not found. Searching the filesystem:"
             find / -name 'nvml.h' 2>/dev/null || true
-            dpkg -L libnvidia-ml-dev nvidia-cuda-dev nvidia-cuda-toolkit 2>/dev/null | grep -i nvml || true
+            dpkg -L libnvidia-ml-dev 2>/dev/null | grep -i nvml || true
             exit 1
           fi
           CUDA_HOME="$(dirname "$(dirname "$NVML_HEADER")")"
