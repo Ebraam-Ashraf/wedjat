@@ -1,423 +1,282 @@
-```bash
 #!/usr/bin/env bash
+#
+# Wedjat installer
+#
+#   curl -sSfL https://raw.githubusercontent.com/Ebraam-Ashraf/wedjat/main/scripts/install.sh | sudo bash
+#   sudo ./install.sh --version v1.2.3
+#   sudo ./install.sh --local [DIST_DIR]
+#
+# Everything lives inside main(), which is only called on the last line.
+# That way bash has parsed the whole script before running any of it, so
+# nothing in here can swallow the rest of the script from stdin when it is
+# piped through `curl | bash`.
+
 set -euo pipefail
 IFS=$'\n\t'
 
-REPO_OWNER="Ebraam-Ashraf"
-REPO_NAME="wedjat"
+readonly REPO_OWNER="Ebraam-Ashraf"
+readonly REPO_NAME="wedjat"
 
-INSTALL_DIR="/usr/local/bin"
-LIB_DIR="/usr/local/lib/wedjat"
-CONFIG_DIR="/etc/wedjat"
-DATA_DIR="/var/lib/wedjat"
-SERVICE_DIR="/etc/systemd/system"
-
-SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
-ROOT_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+readonly INSTALL_DIR="/usr/local/bin"
+readonly LIB_DIR="/usr/local/lib/wedjat"
+readonly CONFIG_DIR="/etc/wedjat"
+readonly DATA_DIR="/var/lib/wedjat"
+readonly SERVICE_DIR="/etc/systemd/system"
 
 MODE=remote
 VERSION=latest
-DIST_DIR="$ROOT_DIR/dist"
+DIST_DIR=""
+WORK_DIR=""
 
 # ------------------------------------------------------------
-# Logging helpers
+# Logging
 # ------------------------------------------------------------
 
-print_step() {
-    printf '\n==> %s\n' "$1"
-}
-
-print_ok() {
-    printf '    ✓ %s\n' "$1"
-}
-
-die() {
-    printf '\nERROR: %s\n' "$1" >&2
-    exit 1
-}
-
-# ------------------------------------------------------------
-# Usage
-# ------------------------------------------------------------
-
-usage() {
-    printf '%s\n' \
-        "Usage: install.sh [--local [DIST_DIR]] [--version TAG]" \
-        "Default downloads the latest GitHub Release; --local installs a built archive."
-}
-
-# ------------------------------------------------------------
-# Arguments
-# ------------------------------------------------------------
-
-while [ "$#" -gt 0 ]; do
-    case "$1" in
-        --local)
-            MODE=local
-            shift
-
-            if [ "$#" -gt 0 ] && [[ "$1" != --* ]]; then
-                DIST_DIR="$1"
-                shift
-            fi
-            ;;
-
-        --version)
-            [ "$#" -ge 2 ] || die "--version requires a release tag"
-
-            VERSION="$2"
-            shift 2
-            ;;
-
-        -h|--help)
-            usage
-            exit 0
-            ;;
-
-        *)
-            die "unknown option: $1"
-            ;;
-    esac
-done
-
-# ------------------------------------------------------------
-# Requirements
-# ------------------------------------------------------------
-
-print_step "Checking requirements"
-
-[ "$EUID" -eq 0 ] \
-    || die "run as root (for example: curl ... | sudo bash)"
-
-[ "$(uname -s)" = Linux ] \
-    || die "Wedjat currently supports Linux only"
-
-command -v systemctl >/dev/null 2>&1 \
-    || die "systemd is required"
-
-command -v install >/dev/null 2>&1 \
-    || die "install is required"
-
-command -v tar >/dev/null 2>&1 \
-    || die "tar is required"
-
-command -v sha256sum >/dev/null 2>&1 \
-    || die "sha256sum is required"
-
-if [ "$MODE" = remote ]; then
-    command -v curl >/dev/null 2>&1 \
-        || die "curl is required"
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    C_RESET=$'\033[0m'
+    C_BOLD=$'\033[1m'
+    C_DIM=$'\033[2m'
+    C_RED=$'\033[31m'
+    C_GREEN=$'\033[32m'
+    C_YELLOW=$'\033[33m'
+    C_BLUE=$'\033[34m'
+else
+    C_RESET="" C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE=""
 fi
 
-print_ok "Required commands found"
+step() { printf '\n%s==>%s %s%s%s\n' "$C_BLUE" "$C_RESET" "$C_BOLD" "$1" "$C_RESET"; }
+ok()   { printf '  %s✓%s %s\n' "$C_GREEN" "$C_RESET" "$1"; }
+info() { printf '  %s%s%s\n' "$C_DIM" "$1" "$C_RESET"; }
+warn() { printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$1" >&2; }
+die()  { printf '\n%sERROR:%s %s\n' "$C_RED" "$C_RESET" "$1" >&2; exit 1; }
+
+usage() {
+    cat <<'EOF'
+Usage: install.sh [--local [DIST_DIR]] [--version TAG]
+
+  (default)         download and install the latest GitHub Release
+  --version TAG     install a specific release tag (for example v1.2.3)
+  --local [DIR]     install a pre-built archive from DIR (default: ./dist)
+  -h, --help        show this help
+EOF
+}
+
+cleanup() {
+    [ -n "$WORK_DIR" ] && rm -rf -- "$WORK_DIR"
+}
 
 # ------------------------------------------------------------
-# Architecture
+# Steps
 # ------------------------------------------------------------
 
-case "$(uname -m)" in
-    x86_64|amd64)
-        ARCH=amd64
-        ;;
+parse_args() {
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --local)
+                MODE=local
+                shift
+                if [ "$#" -gt 0 ] && [[ "$1" != -* ]]; then
+                    DIST_DIR="$1"
+                    shift
+                fi
+                ;;
+            --version)
+                [ "$#" -ge 2 ] || die "--version requires a release tag"
+                VERSION="$2"
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                die "unknown option: $1 (see --help)"
+                ;;
+        esac
+    done
+}
 
-    aarch64|arm64)
-        ARCH=arm64
-        ;;
+check_requirements() {
+    step "Checking requirements"
 
-    *)
-        die "unsupported CPU architecture: $(uname -m)"
-        ;;
-esac
+    [ "$EUID" -eq 0 ] || die "run as root, for example: curl ... | sudo bash"
+    [ "$(uname -s)" = Linux ] || die "Wedjat supports Linux only"
 
-ASSET="wedjat-linux-$ARCH.tar.gz"
+    local cmd
+    local required=(systemctl install tar sha256sum getent)
+    [ "$MODE" = remote ] && required+=(curl)
 
-# ------------------------------------------------------------
-# Temporary directory
-# ------------------------------------------------------------
+    for cmd in "${required[@]}"; do
+        command -v "$cmd" >/dev/null 2>&1 || die "$cmd is required but not installed"
+    done
 
-WORK_DIR="$(mktemp -d /tmp/wedjat.XXXXXX)"
+    case "$(uname -m)" in
+        x86_64|amd64)  ARCH=amd64 ;;
+        aarch64|arm64) ARCH=arm64 ;;
+        *) die "unsupported CPU architecture: $(uname -m)" ;;
+    esac
+    ASSET="wedjat-linux-$ARCH.tar.gz"
 
-trap 'rm -rf -- "$WORK_DIR"' EXIT
+    ok "Linux/$ARCH with systemd"
+}
 
-ARCHIVE="$WORK_DIR/$ASSET"
+fetch() {
+    # fetch URL DEST : quiet download, progress bar only on a terminal
+    local url="$1" dest="$2"
+    local opts=(--fail --location --retry 5 --retry-delay 2)
 
-# ------------------------------------------------------------
-# Download / local archive
-# ------------------------------------------------------------
+    if [ -t 2 ]; then
+        opts+=(--progress-bar)
+    else
+        opts+=(--silent --show-error)
+    fi
 
-if [ "$MODE" = local ]; then
+    curl "${opts[@]}" "$url" -o "$dest"
+}
 
-    print_step "Preparing local release"
+get_release() {
+    ARCHIVE="$WORK_DIR/$ASSET"
 
-    SOURCE_ARCHIVE="$DIST_DIR/$ASSET"
+    if [ "$MODE" = local ]; then
+        step "Using local release"
 
-    [ -f "$SOURCE_ARCHIVE" ] \
-        || die "missing $SOURCE_ARCHIVE; build it with make release"
+        if [ -z "$DIST_DIR" ]; then
+            DIST_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")/.." && pwd)/dist"
+        fi
 
-    [ -f "$SOURCE_ARCHIVE.sha256" ] \
-        || die "missing $SOURCE_ARCHIVE.sha256"
+        [ -f "$DIST_DIR/$ASSET" ]        || die "missing $DIST_DIR/$ASSET (build it with: make release)"
+        [ -f "$DIST_DIR/$ASSET.sha256" ] || die "missing $DIST_DIR/$ASSET.sha256"
 
-    cp -- "$SOURCE_ARCHIVE" "$ARCHIVE"
-    cp -- "$SOURCE_ARCHIVE.sha256" "$ARCHIVE.sha256"
+        cp -- "$DIST_DIR/$ASSET" "$ARCHIVE"
+        cp -- "$DIST_DIR/$ASSET.sha256" "$ARCHIVE.sha256"
 
-    print_ok "Local release copied"
+        ok "$ASSET from $DIST_DIR"
+        return
+    fi
 
-else
-
-    print_step "Downloading Wedjat"
+    step "Downloading Wedjat ($VERSION)"
 
     [[ "$VERSION" = latest || "$VERSION" =~ ^v[0-9][A-Za-z0-9.+_-]*$ ]] \
         || die "invalid release tag: $VERSION"
 
+    local base="https://github.com/$REPO_OWNER/$REPO_NAME/releases"
     if [ "$VERSION" = latest ]; then
-        RELEASE_BASE="https://github.com/$REPO_OWNER/$REPO_NAME/releases/latest/download"
+        base="$base/latest/download"
     else
-        RELEASE_BASE="https://github.com/$REPO_OWNER/$REPO_NAME/releases/download/$VERSION"
+        base="$base/download/$VERSION"
     fi
 
-    echo "    $ASSET"
+    info "$ASSET"
+    fetch "$base/$ASSET" "$ARCHIVE" || die "release asset not found: $ASSET"
+    fetch "$base/$ASSET.sha256" "$ARCHIVE.sha256" || die "release checksum not found: $ASSET.sha256"
 
-    curl \
-        --fail \
-        --location \
-        --retry 5 \
-        --retry-delay 2 \
-        --progress-bar \
-        "$RELEASE_BASE/$ASSET" \
-        -o "$ARCHIVE" \
-        || die "release asset not found: $ASSET"
+    ok "Downloaded $ASSET ($(du -h -- "$ARCHIVE" | cut -f1))"
+}
 
-    print_ok "$ASSET downloaded"
+verify_release() {
+    step "Verifying release"
 
-    echo "    $ASSET.sha256"
+    (cd "$WORK_DIR" && sha256sum --check --quiet "$ASSET.sha256") \
+        || die "SHA-256 checksum verification failed"
+    ok "SHA-256 checksum matches"
 
-    curl \
-        --fail \
-        --location \
-        --retry 5 \
-        --retry-delay 2 \
-        --progress-bar \
-        "$RELEASE_BASE/$ASSET.sha256" \
-        -o "$ARCHIVE.sha256" \
-        || die "release checksum not found"
+    local member
+    while IFS= read -r member; do
+        case "$member" in
+            wedjatd|wedjat|config.yaml|wedjatd.service|ebpf|ebpf/|ebpf/*.bpf.o) ;;
+            *) die "unexpected path in release archive: $member" ;;
+        esac
+    done < <(tar --list --gzip --file "$ARCHIVE")
+    ok "Archive contents are as expected"
 
-    print_ok "$ASSET.sha256 downloaded"
-fi
+    tar --extract --gzip --file "$ARCHIVE" --directory "$WORK_DIR" \
+        --no-same-owner --no-same-permissions
 
-# ------------------------------------------------------------
-# Show downloaded files
-# ------------------------------------------------------------
+    local f
+    for f in wedjatd wedjat config.yaml wedjatd.service; do
+        [ -f "$WORK_DIR/$f" ] || die "archive does not contain $f"
+    done
+}
 
-print_step "Downloaded files"
+install_files() {
+    step "Installing files"
 
-ls -lh \
-    "$ARCHIVE" \
-    "$ARCHIVE.sha256"
+    getent group wedjat >/dev/null || groupadd --system wedjat
 
-# ------------------------------------------------------------
-# Verify checksum
-# ------------------------------------------------------------
+    install -d -o root -g wedjat -m 0750  "$CONFIG_DIR"
+    install -d -o root -g wedjat -m 2750  "$DATA_DIR"
 
-print_step "Verifying SHA-256 checksum"
+    install -o root -g root -m 0755 "$WORK_DIR/wedjatd" "$INSTALL_DIR/wedjatd"
+    install -o root -g root -m 0755 "$WORK_DIR/wedjat"  "$INSTALL_DIR/wedjat"
+    ok "Binaries      -> $INSTALL_DIR"
 
-(
-    cd "$WORK_DIR"
-    sha256sum --check "$ASSET.sha256"
-) || die "release checksum verification failed"
-
-print_ok "SHA-256 verified"
-
-# ------------------------------------------------------------
-# Validate archive
-# ------------------------------------------------------------
-
-print_step "Validating release archive"
-
-while IFS= read -r member; do
-    case "$member" in
-        wedjatd|wedjat|config.yaml|wedjatd.service)
-            ;;
-
-        ebpf|ebpf/)
-            ;;
-
-        ebpf/*.bpf.o)
-            ;;
-
-        *)
-            die "unexpected path in release archive: $member"
-            ;;
-    esac
-done < <(tar --list --gzip --file "$ARCHIVE")
-
-print_ok "Release archive validated"
-
-# ------------------------------------------------------------
-# Extract
-# ------------------------------------------------------------
-
-tar \
-    --extract \
-    --gzip \
-    --file "$ARCHIVE" \
-    --directory "$WORK_DIR" \
-    --no-same-owner \
-    --no-same-permissions
-
-[ -f "$WORK_DIR/wedjatd" ] \
-    || die "archive does not contain wedjatd"
-
-[ -f "$WORK_DIR/wedjat" ] \
-    || die "archive does not contain wedjat"
-
-[ -f "$WORK_DIR/config.yaml" ] \
-    || die "archive does not contain config.yaml"
-
-[ -f "$WORK_DIR/wedjatd.service" ] \
-    || die "archive does not contain wedjatd.service"
-
-# ------------------------------------------------------------
-# Install
-# ------------------------------------------------------------
-
-print_step "Installing Wedjat"
-
-command -v getent >/dev/null 2>&1 \
-    || die "getent is required"
-
-if ! getent group wedjat >/dev/null; then
-    groupadd --system wedjat
-fi
-
-install \
-    -d \
-    -o root \
-    -g wedjat \
-    -m 0750 \
-    "$CONFIG_DIR"
-
-install \
-    -d \
-    -o root \
-    -g wedjat \
-    -m 2750 \
-    "$DATA_DIR"
-
-install \
-    -o root \
-    -g root \
-    -m 0755 \
-    "$WORK_DIR/wedjatd" \
-    "$INSTALL_DIR/wedjatd"
-
-install \
-    -o root \
-    -g root \
-    -m 0755 \
-    "$WORK_DIR/wedjat" \
-    "$INSTALL_DIR/wedjat"
-
-if [ ! -e "$CONFIG_DIR/config.yaml" ]; then
-    install \
-        -o root \
-        -g wedjat \
-        -m 0640 \
-        "$WORK_DIR/config.yaml" \
-        "$CONFIG_DIR/config.yaml"
-fi
-
-install \
-    -o root \
-    -g root \
-    -m 0644 \
-    "$WORK_DIR/wedjatd.service" \
-    "$SERVICE_DIR/wedjatd.service"
-
-# The compiled BPF objects are the daemon's tracer.
-if [ -d "$WORK_DIR/ebpf" ]; then
-    install \
-        -d \
-        -o root \
-        -g root \
-        -m 0755 \
-        "$LIB_DIR/ebpf"
-
-    install \
-        -o root \
-        -g root \
-        -m 0644 \
-        "$WORK_DIR"/ebpf/*.bpf.o \
-        "$LIB_DIR/ebpf/"
-fi
-
-print_ok "Wedjat installed"
-
-# ------------------------------------------------------------
-# User group
-# ------------------------------------------------------------
-
-SUDO_USER="$(printenv SUDO_USER 2>/dev/null || true)"
-
-if [ -n "$SUDO_USER" ] \
-    && id "$SUDO_USER" >/dev/null 2>&1 \
-    && command -v usermod >/dev/null 2>&1; then
-
-    if ! id -nG "$SUDO_USER" \
-        | tr ' ' '\n' \
-        | grep -qx wedjat; then
-
-        usermod -aG wedjat "$SUDO_USER"
-
-        printf \
-            '    Added %s to the wedjat group; log out and back in for database access.\n' \
-            "$SUDO_USER"
+    if [ -e "$CONFIG_DIR/config.yaml" ]; then
+        info "Config        kept existing $CONFIG_DIR/config.yaml"
+    else
+        install -o root -g wedjat -m 0640 "$WORK_DIR/config.yaml" "$CONFIG_DIR/config.yaml"
+        ok "Config        -> $CONFIG_DIR/config.yaml"
     fi
-fi
+
+    install -o root -g root -m 0644 "$WORK_DIR/wedjatd.service" "$SERVICE_DIR/wedjatd.service"
+    ok "Service unit  -> $SERVICE_DIR/wedjatd.service"
+
+    if [ -d "$WORK_DIR/ebpf" ]; then
+        install -d -o root -g root -m 0755 "$LIB_DIR/ebpf"
+        install -o root -g root -m 0644 "$WORK_DIR"/ebpf/*.bpf.o "$LIB_DIR/ebpf/"
+        ok "eBPF objects  -> $LIB_DIR/ebpf"
+    fi
+
+    local user="${SUDO_USER:-}"
+    if [ -n "$user" ] && [ "$user" != root ] && id "$user" >/dev/null 2>&1; then
+        if ! id -nG "$user" | tr ' ' '\n' | grep -qx wedjat; then
+            usermod -aG wedjat "$user"
+            ok "Added $user to the wedjat group"
+            info "Log out and back in for database access"
+        fi
+    fi
+}
+
+start_service() {
+    step "Starting service"
+
+    systemctl daemon-reload
+    systemctl enable --quiet wedjatd.service
+    systemctl restart wedjatd.service || true
+
+    if systemctl is-active --quiet wedjatd.service; then
+        ok "wedjatd is running"
+    else
+        warn "wedjatd is not running"
+        info "Check with: sudo systemctl status wedjatd"
+        info "Logs:       sudo journalctl -u wedjatd -n 50 --no-pager"
+    fi
+}
+
+summary() {
+    printf '\n%s%s Wedjat installed%s\n\n' "$C_GREEN" "✓" "$C_RESET"
+    printf '  %-10s %s\n' "Release"   "$VERSION"
+    printf '  %-10s %s\n' "Binary"    "$INSTALL_DIR/wedjatd"
+    printf '  %-10s %s\n' "Service"   "wedjatd.service"
+    printf '  %-10s %s\n' "Config"    "$CONFIG_DIR/config.yaml"
+    printf '\n  Open the dashboard with:  %ssudo wedjat%s\n\n' "$C_BOLD" "$C_RESET"
+}
 
 # ------------------------------------------------------------
-# Systemd
+# Main
 # ------------------------------------------------------------
 
-print_step "Configuring Wedjat service"
+main() {
+    parse_args "$@"
+    check_requirements
 
-systemctl daemon-reload
-systemctl enable wedjatd.service
+    WORK_DIR="$(mktemp -d /tmp/wedjat.XXXXXX)"
+    trap cleanup EXIT
 
-if systemctl is-active --quiet wedjatd.service; then
-    systemctl restart wedjatd.service
-else
-    systemctl start wedjatd.service
-fi
+    get_release
+    verify_release
+    install_files
+    start_service
+    summary
+}
 
-print_ok "wedjatd service enabled"
-
-# ------------------------------------------------------------
-# Verify service
-# ------------------------------------------------------------
-
-print_step "Checking Wedjat service"
-
-if systemctl is-active --quiet wedjatd.service; then
-    print_ok "wedjatd is running"
-else
-    echo "    WARNING: wedjatd is not currently running"
-    echo "    Check with: sudo systemctl status wedjatd"
-fi
-
-# ------------------------------------------------------------
-# Done
-# ------------------------------------------------------------
-
-echo
-echo "=============================================="
-echo " Wedjat installation completed"
-echo "=============================================="
-echo
-echo " Release : $VERSION"
-echo " Binary  : $INSTALL_DIR/wedjatd"
-echo " Service : wedjatd.service"
-echo
-echo " Dashboard:"
-echo "   sudo wedjat"
-echo
-```
+main "$@"
