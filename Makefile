@@ -13,7 +13,7 @@ ARCHIVE := $(DIST_DIR)/$(RELEASE_NAME).tar.gz
 
 .DEFAULT_GOAL := build
 
-.PHONY: build release install uninstall test clean help dev dev-daemon dev-ui fmt lint check
+.PHONY: build release install uninstall test clean help dev dev-daemon dev-ui fmt lint check ci
 
 help:
 	@printf '%s\n' \
@@ -88,6 +88,36 @@ release: check
 	@rm -rf "$(STAGE_DIR)"
 	@echo "Created $(ARCHIVE)"
 	@echo "Created $(ARCHIVE).sha256"
+
+# CI target: the GitHub Actions workflow (ci.yml) runs `make ci`. It must
+# succeed without sudo and without a GPU, so it builds the BPF objects, runs
+# the Go test suite, and lints the Go and C sources — but never loads the
+# programs into the kernel.
+ci: check fmt
+	@echo "==> CI: building BPF objects (no kernel load)"
+	@$(MAKE) -C "$(DAEMON_DIR)" bpf
+	@echo "==> CI: building development daemon"
+	@$(MAKE) -C "$(DAEMON_DIR)" build-dev GOARCH=$(GOARCH)
+	@echo "==> CI: running Go tests"
+	@cd $(ROOT_DIR) && go test ./...
+	@echo "==> CI: running daemon tests"
+	@$(MAKE) -C "$(DAEMON_DIR)" test
+	@echo "==> CI: running UI server tests"
+	@cd $(ROOT_DIR) && go test ./ui/server/...
+	@echo "CI passed."
+
+# Lint target: format-check only (never rewrites files). Fails the build on
+# drift instead of silently fixing it.
+lint:
+	@command -v gofmt >/dev/null || { echo 'lint requires gofmt' >&2; exit 1; }
+	@command -v clang-format >/dev/null || { echo 'lint requires clang-format' >&2; exit 1; }
+	@echo "==> gofmt check"
+	@gofmt -l "$(ROOT_DIR)" | grep -v '^daemon/ebpf/build/' && exit 1 || true
+	@echo "==> clang-format check"
+	@find "$(DAEMON_DIR)/nvml" "$(DAEMON_DIR)/ebpf" -type d -name build -prune -o \
+		-type f \( -name '*.c' -o -name '*.h' \) -print0 \
+		| xargs -0 -r clang-format --dry-run --Werror
+	@echo "Lint passed."
 
 install:
 	@[ -f "$(ARCHIVE)" ] || { echo "ERROR: missing $(ARCHIVE); run make release first" >&2; exit 1; }

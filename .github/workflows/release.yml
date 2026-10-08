@@ -27,7 +27,6 @@ jobs:
           cache: npm
           cache-dependency-path: |
             ui/web/package-lock.json
-            ui/web/frontend/package-lock.json
 
       - name: Install Dependencies
         env:
