@@ -83,20 +83,20 @@ sudo wedjat uninstall
 ```
 
 For a source checkout, `sudo make uninstall` performs the same non-destructive
-uninstall. `sudo make clean` additionally removes Wedjat data, configuration,
-and all repository build artifacts.
+uninstall. You can also run `make clean` to remove all repository build artifacts
+(this does not uninstall the system or remove configuration).
 
 ## Developer Commands
 
 Run these commands from the repository root:
 
 ```bash
-sudo make                 # Build daemon, eBPF objects, UI, and dist/
+make release              # Build daemon, eBPF objects, UI, and package into dist/
 sudo make install         # Install an existing dist/ release; does not rebuild
-sudo make uninstall       # Remove installed Wedjat; keep build artifacts
-sudo make clean           # Remove installed Wedjat and all build artifacts
-sudo make ci              # Format and test the daemon/eBPF path
-sudo make help            # Show command help
+sudo make uninstall       # Remove installed Wedjat (calls wedjat uninstall)
+make clean                # Delete build artifacts only (never uninstalls system)
+make ci                   # Format and test the daemon/eBPF path
+make help                 # Show command help
 ./scripts/install-private.sh  # Install a private GitHub release for testing (requires gh auth)
 ```
 
