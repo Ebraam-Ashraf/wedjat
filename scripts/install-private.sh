@@ -62,9 +62,8 @@ VERSION="$(
 print_ok "Latest release: $VERSION"
 
 # Keep downloads across interruptions so rerunning the installer can resume.
-CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/wedjat"
-TMP_DIR="$CACHE_ROOT/$VERSION"
-mkdir -p "$TMP_DIR"
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf -- "$TMP_DIR"' EXIT
 
 # ------------------------------------------------------------
 # Get GitHub token
